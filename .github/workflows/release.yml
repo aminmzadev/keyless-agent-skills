@@ -27,11 +27,12 @@ jobs:
           V=$(python3 -c "import json;print(json.load(open('MANIFEST.json'))['version'])")
           mkdir -p dist
           find . -name __pycache__ -type d -exec rm -rf {} + || true
-          zip -qr "dist/agent-skills-pack-v$V.zip" \
-            GUIDE.md README.md MANIFEST.json install.sh test-all.sh sync.sh \
-            shared skill-router anon-image anon-audio ffmpeg-pipeline \
-            web-search fetch-page deep-research \
-            -x "*/__pycache__/*" "*.pyc" "packaging/*" "dist/*"
+          zip -qr "dist/keyless-agent-skills-pack-v$V.zip" \
+            GUIDE.md README.md MANIFEST.json SECURITY.md install.sh test-all.sh sync.sh \
+            shared packaging .github \
+            skill-router anon-image anon-audio ffmpeg-pipeline \
+            web-search fetch-page deep-research examples/README.md \
+            -x "*/__pycache__/*" "*.pyc" "packaging/dist-repo/*" "*.tgz" "dist/*"
           for s in skill-router anon-image anon-audio ffmpeg-pipeline web-search fetch-page deep-research; do
             zip -qr "dist/$s-v$V.zip" "$s" -x "*/__pycache__/*" "*.pyc"
           done
