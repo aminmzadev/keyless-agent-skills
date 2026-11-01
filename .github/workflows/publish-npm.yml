@@ -63,6 +63,16 @@ jobs:
           echo "package version: $V / tag: ${GITHUB_REF_NAME}"
           [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "tag/version mismatch"; exit 1; }
 
+      - name: "preflight — has the package been bootstrapped on npm?"
+        id: preflight
+        run: |
+          if curl -fsS -o /dev/null https://registry.npmjs.org/keyless-agent-skills; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=npm not bootstrapped::keyless-agent-skills is not on the registry yet. The first publish has to be interactive (account 2FA) — see the header of this file, then register the trusted publisher. CI takes over from the next tag."
+          fi
+
       - name: tarball preview (this is what the registry will store)
         run: cd packaging/dist-repo && npm pack --dry-run
 
@@ -71,4 +81,9 @@ jobs:
       # With staged publishing on, the maintainer still approves with 2FA:
       #   npm stage publish   -> then `npm stage approve <id>` (or the web UI)
       - name: publish
+        if: steps.preflight.outputs.exists == 'true'
         run: cd packaging/dist-repo && npm publish
+
+      - name: publish (skipped — bootstrap first)
+        if: steps.preflight.outputs.exists == 'false'
+        run: echo "no-op — run 'npm publish' once by hand, then register the trusted publisher"

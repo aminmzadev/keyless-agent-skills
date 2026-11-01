@@ -1,6 +1,6 @@
 name: ci
 
-# Runs on every push and PR: the pack's own 44-test suite, on three Pythons,
+# Runs on every push and PR: the pack's own 45-test suite, on three Pythons,
 # with ffmpeg installed so the video tests actually run.
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg poppler-utils
 
       - name: python deps (all optional)
-        run: pip install --quiet "edge-tts>=7.3.1" pillow pypdf
+        run: pip install --quiet "edge-tts>=7.3.1" pillow pypdf pyyaml
 
       - name: syntax check every script
         run: |
@@ -36,7 +36,7 @@ jobs:
           done
           find . -name __pycache__ -type d -exec rm -rf {} + || true
 
-      - name: smoke suite (fast: no network generations)
+      - name: "smoke suite (fast: no network generations)"
         run: |
           chmod +x test-all.sh install.sh sync.sh
           ./test-all.sh --fast
@@ -44,7 +44,7 @@ jobs:
       - name: packaging tree builds and packs
         run: |
           chmod +x packaging/build.sh
-          bash packaging/build.sh --owner ci --scope ci
+          bash packaging/build.sh --owner ci --name keyless-agent-skills
           cd packaging/dist-repo
           npm pack --dry-run 2>&1 | tail -20
 
@@ -58,5 +58,5 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg poppler-utils
-      - run: pip install --quiet "edge-tts>=7.3.1" pillow
+      - run: pip install --quiet "edge-tts>=7.3.1" pillow pyyaml
       - run: chmod +x test-all.sh && ./test-all.sh

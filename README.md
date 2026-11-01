@@ -47,7 +47,7 @@ need a written answer with citations? → research.py
 ./install.sh              # checks + installs ffmpeg, edge-tts, pillow, poppler (all optional)
 ./install.sh --piper      # + offline TTS: piper-tts and one ~63 MB voice
 ./install.sh --check      # report only, change nothing
-./test-all.sh             # 44 smoke tests, ~2-3 min cold (network)
+./test-all.sh             # 45 smoke tests, ~2-3 min cold (network)
 ./test-all.sh --fast      # skip slow network work: 39 passed, 2 skipped
 ```
 

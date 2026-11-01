@@ -60,7 +60,7 @@ None of them is required. Every script detects what it has and says what it lost
 ### 2.3 Verify
 
 ```bash
-./test-all.sh            # 44 smoke tests, ~2-3 min cold (network)
+./test-all.sh            # 45 smoke tests, ~2-3 min cold (network)
 ./test-all.sh --fast     # skip slow network work: 39 passed, 2 skipped
 ```
 
@@ -268,7 +268,7 @@ agent-skills-pack-v1.2.0/
 ├── README.md                 the short version
 ├── MANIFEST.json             machine-readable catalogue (route from this)
 ├── install.sh                optional deps; --piper, --check
-├── test-all.sh               44 smoke tests; --fast
+├── test-all.sh               45 smoke tests; --fast
 ├── sync.sh                   republish canonical scripts into the standalone skills
 ├── shared/cachectl.py        one cache for everything
 ├── skill-router/             SKILL.md + scripts/route.py
