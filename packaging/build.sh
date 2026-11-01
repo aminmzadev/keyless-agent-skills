@@ -58,8 +58,10 @@ cp "$src/GUIDE.md" "$src/README.md" "$src/MANIFEST.json" "$src/install.sh" "$out
 python3 "$here/make_package.py" "$src" "$out" "$OWNER" "$NAME" "$VERSION"
 
 cp "$here/LICENSE" "$here/NOTICE" "$here/DISCLOSURE" "$out/"
+# workflows live at the repo root (GitHub only reads .github/workflows there),
+# and are copied into the generated tree so the package carries its own CI too
 mkdir -p "$out/.github/workflows"
-cp "$here/.github/workflows/"*.yml "$out/.github/workflows/"
+cp "$src/.github/workflows/"*.yml "$out/.github/workflows/"
 
 # the _cachekit copies the three caching skills expect next to their scripts
 for s in web-search fetch-page deep-research; do
