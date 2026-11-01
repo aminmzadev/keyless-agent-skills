@@ -5,6 +5,21 @@ can run shell commands. Every script is stdlib-first, every network dependency i
 key-less, and every one of them degrades instead of dying. Start with
 [`GUIDE.md`](GUIDE.md) if you want install + usage in one document.
 
+## Install
+
+```bash
+npx skills add aminmzadev/keyless-agent-skills              # all seven, into any agent
+npx skills add aminmzadev/keyless-agent-skills --list       # what is inside
+npx skills add aminmzadev/keyless-agent-skills --skill web-search -a claude-code --copy
+```
+
+npm (name reserved, first publish pending): `keyless-agent-skills` — 84.8 kB packed,
+34 files, **no lifecycle scripts**, no binaries, no voice models.
+
+Prefer files? The [v1.2.0 release](https://github.com/aminmzadev/keyless-agent-skills/releases/tag/v1.2.0)
+has the bundle zip plus one zip per skill and a `SHA256SUMS`. Or just clone and run
+`./install.sh --check` to see what your machine already has.
+
 ## Start here
 
 | Skill | Does | Entry point | Hard deps |
