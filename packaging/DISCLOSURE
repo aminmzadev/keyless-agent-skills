@@ -1,0 +1,44 @@
+DISCLOSURE
+==========
+
+What this package does that could look suspicious to an automated scanner,
+and why each of those behaviours exists.
+
+1. NETWORK EGRESS TO MANY HOSTS
+   web-search, fetch-page and deep-research make outbound HTTP requests to a
+   large number of third-party hosts: search engines, public APIs (Hacker News,
+   StackExchange, GitHub, arXiv, OpenAlex, Europe PMC, Crossref, Wikipedia),
+   and general-purpose CORS relays (api.allorigins.win, api.cors.lol,
+   api.codetabs.com, r.jina.ai). The relays exist because DuckDuckGo and Bing
+   refuse datacenter IPs; the code tries them in order and caches answers
+   locally. This is a research/reading tool: it makes the same requests a
+   human would make with a browser.
+
+2. PROXY / RELAY ENDPOINTS
+   The relay list is a plain array of public CORS proxies, used to fetch a URL
+   the local IP cannot reach. It is not a tunnel, it does not hide the user
+   from the destination, and there is no credential handling of any kind.
+
+3. BASE64 DECODING OF REDIRECT PARAMETERS
+   Search engines wrap result links (duckduckgo.com/l/?uddg=…, bing.com/ck/a?u=a1<base64>).
+   The code decodes those wrappers to recover the real URL. It is standard
+   SERP parsing, not obfuscation of anything the package itself sends.
+
+4. NO INSTALL-TIME BEHAVIOUR
+   There are no postinstall/preinstall scripts, no npm lifecycle hooks, no
+   binaries, no native builds. Installing the package copies Python files. The
+   only command that downloads anything is install.sh, which a human runs
+   deliberately to fetch ffmpeg/piper and which prints every step.
+
+5. SUBPROCESS USE
+   ffmpeg/ffprobe are invoked with fixed, locally-built argument vectors for
+   media conversion. No shell=True, no user-controlled command strings.
+
+6. NO CREDENTIALS, EVER
+   The package never asks for, stores or transmits an account, token, cookie or
+   password. If a page needs a login, it says so and stops.
+
+Nothing here is offensive tooling. It is a media toolkit plus a web reader.
+
+Maintainer: see package.json "author" / the repository ownership.
+Review contact: open an issue on the repository if a human review is needed.

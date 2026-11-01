@@ -1,0 +1,74 @@
+name: publish-npm
+
+# Publishes the generated package to npm when a tag like v1.2.0 is pushed.
+#
+# Two things to know before this works (both are registry-side, not code):
+#   1. The package must ALREADY EXIST on npm. Trusted publishing (OIDC) cannot
+#      create a package — the very first publish needs an interactive 2FA
+#      session or a granular token with 2FA bypass. Do that once, by hand.
+#   2. Then register the trusted publisher: npmjs.com → the package → Settings →
+#      Trusted Publisher → GitHub Actions, owner/repo + this filename
+#      (publish-npm.yml). Or from a shell:
+#         npm trust github keyless-agent-skills --repo owner/keyless-agent-skills \
+#           --file publish-npm.yml --allow-publish
+#
+# After that, no token exists anywhere. The job mints a short-lived OIDC
+# credential, npm attaches a Sigstore provenance attestation automatically.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write          # required: lets the runner mint the OIDC token
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm       # optional: add required reviewers in repo settings
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      # staged publishing and trusted publishing both need a recent CLI
+      - name: npm up to date
+        run: npm install -g npm@latest && npm --version
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: build the publishable tree
+        run: |
+          chmod +x packaging/build.sh
+          bash packaging/build.sh \
+            --owner "${{ github.repository_owner }}" \
+            --name keyless-agent-skills
+
+      - name: sanity — name and version match what we are publishing
+        run: |
+          cd packaging/dist-repo
+          node -e "const p=require('./package.json');
+            if (p.name !== 'keyless-agent-skills') { console.error('unexpected name '+p.name); process.exit(1) }"
+
+      - name: sanity — the version in the tag is the version in package.json
+        run: |
+          cd packaging/dist-repo
+          V=$(node -p "require('./package.json').version")
+          echo "package version: $V / tag: ${GITHUB_REF_NAME}"
+          [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "tag/version mismatch"; exit 1; }
+
+      - name: tarball preview (this is what the registry will store)
+        run: cd packaging/dist-repo && npm pack --dry-run
+
+      # Trusted publishing + provenance: no NPM_TOKEN, no --provenance needed
+      # when the repo is public and the workflow is registered as the publisher.
+      # With staged publishing on, the maintainer still approves with 2FA:
+      #   npm stage publish   -> then `npm stage approve <id>` (or the web UI)
+      - name: publish
+        run: cd packaging/dist-repo && npm publish

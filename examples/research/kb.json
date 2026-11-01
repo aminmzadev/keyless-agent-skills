@@ -1,0 +1,240 @@
+{
+ "question": "how to make a ken burns video from ai images with ffmpeg",
+ "queries": [
+  "how to make a ken burns video from ai images with ffmpeg",
+  "how to make a ken burns video from ai images with ffmpeg 2026",
+  "how to make a ken burns video from ai images with ffmpeg explained"
+ ],
+ "sources": [
+  {
+   "title": "https://www.gnu.org/software/make/",
+   "text": "Skip to main text JOIN\u00a0THE\u00a0FSF GNU Operating System Supported by the\nFree Software Foundation Site navigation\nSkip - ABOUT\u00a0GNU - PHILOSOPHY - LICENSES - EDUCATION - =\nSOFTWARE\n\n= - DISTROS - DOCS - MALWARE - HELP\u00a0GNU - AUDIO\u00a0&\u00a0VIDEO - GNU\u00a0ART - FUN - GNU'S\u00a0WHO? - SOFTWARE\u00a0DIRECTORY - HARDWARE - SITEMAP\n## GNU Make GNU Make is a tool which controls the generation of executables and other\nnon-source files of a program from the program's source files. Make gets its knowledge of how to build your program from a file\ncalled the makefile, which lists each of the non-source files\nand how to compute it from other files. When you write a program, you\nshould write a makefile for it, so that it is possible to use Make to\nbuild and install the program.\n#### Capabilities of Make - Make enables the end user to build and install your package\nwithout knowing the details of how that is done -- because these\ndetails are recorded in the makefile that you supply. - Make figures out automatically which files it needs to update,\nbased on which source files have changed. It also automatically\ndetermines the proper order for updating files, in case one non-source\nfile depends on another non-source file. As a result, if you change a few source files and then run Make, it\ndoes not need to recompile all of your program. It updates only those\nnon-source files that depend directly or indirectly on the source\nfiles that you changed. - Make is not limited to any particular language. For each\nnon-source file in the program, the makefile specifies the shell\ncommands to compute it. These shell commands can run a compiler to\nproduce an object file, the linker to produce an executable,\nar to update a library, or TeX or Makeinfo to format\ndocumentation. - Make is not limited to building a package. You can also use Make\nto control installing or deinstalling a package, generate tags tables for\nit, or anything else you want to do often enough to make it worth\nwhile writing down how to do it.\n### Table of contents - Download - Documentation - Mailing lists - Getting involved - Licensing\n#### Make Rules and Targets A rule in the makefile tells Make how to execute a series of\ncommands in order to build a target file from source files.\nIt also specifies a list of dependencies of the target file.\nThis list should include all files (whether source files or other targets)\nwhich are used as inputs to the commands in the rule. Here is what a simple rule looks like: target: dependencies ...\ncommands\n... When you run Make, you can specify particular targets to update;\notherwise, Make updates the first target listed in the makefile. Of\ncourse, any other target files needed as input for generating these\ntargets must be updated first. Make uses the makefile to figure out which target files ought to be\nbrought up to date, and then determines which of them actually need to\nbe updated. If a target file is newer than all of its dependencies,\nthen it is already up to date, and it does not need to be regenerated.\nThe other target files do need to be updated, but in the right order:\neach target file must be regenerated before it is used in regenerating\nother targets.\n#### Advantages of GNU Make GNU Make has many powerful features for use in makefiles, beyond what\nother Make versions have. It can also regenerate, use, and then delete\nintermediate files which need not be saved. GNU Make also has a few simple features that are very convenient. For\nexample, the -o file option which says ``pretend that\nsource file file has not changed, even though it has changed.''\nThis is extremely useful when you add a new macro to a header file.\nMost versions of Make will assume they must therefore recompile all the\nsource files that use the header file; but GNU Make gives you a way to\navoid the recompilation, in the case where you know your change to the\nheader file does not require it. However, the most important difference between GNU Make and most\nversions of Make is that GNU Make is free software.\n#### Makefiles And Conventions We have developed conventions for how to write Makefiles, which all\nGNU packages ought to follow. It is a good idea to follow these\nconventions in your program even if you don't intend it to be GNU\nsoftware, so that users will be able to build your package just\nlike many other packages, and will not need to learn anything special\nbefore doing so. These conventions are found in the chapter\n``Makefile conventions'' (147 k\ncharacters) of the GNU Coding\nStandards (147 k characters).\n### Download Make\ncan be found on the main GNU ftp server\n(download Make via HTTPS,\ndownload Make via HTTP or\ndownload Make via FTP), and its\nmirrors; please\nuse a mirror\nif possible.\n### Documentation Documentation for\nMake\nis online, as is documentation for most\nGNU software. It can also be accessed by running\ninfo\u00a0make or\nman\u00a0make, or by looking at\n/usr/share/doc/make/,\nor similar directories on your system. A brief summary is available by\nrunning make\u00a0--help.\n### Mailing lists Make\nhas the following mailing lists: - bug-make\nfor discussing most aspects of\nMake,\nincluding development and enhancement requests, as well as bug reports. - help-make\nfor general user help and discussion. Announcements about\nand most other GNU software are made on the\ninfo-gnu\nmailing list\n(archives). Security reports that should not be made immediately public can be\nsent directly to the maintainer. If there is no response to an urgent\nissue, you can escalate to the general\nsecurity\nmailing list for advice.\n### Getting involved Development of\nand GNU in general, is a volunteer effort, and you can contribute. For\ninformation, please read How to help GNU. If you'd\nlike to get involved, it's a good idea to join the discussion mailing\nlist (see above). Development tools For development sources, issue trackers, and other\ninformation, please see the\nproject page\nat savannah.gnu.org. Testing Trying the latest test release (when available) is always\nappreciated. Test releases can be found on the GNU \u201calpha\u201d\nserver\n(HTTPS,\nHTTP,\nFTP) and its\nmirrors. Translating To translate the program messages into other languages, please refer\nto the\nTranslation Project page for\nMake.\nNew translations or updates to the existing strings will not be\nincorporated into\nMake\nif they are sent elsewhere. For more information, see the Translation\nProject home page. Maintainer Make\nis currently maintained by\nPaul Smith.\nPlease use the mailing lists for contact.\n### Licensing Make\nis free software; you can redistribute it and/or modify it under the\nterms of the GNU General\nPublic License as published by the Free Software Foundation; either\nversion\u00a03 of the License, or (at your option) any later version. BACK TO TOP \u25b2 \u201cThe Free Software Foundation (FSF) is a nonprofit with a worldwide\nmission to promote computer user freedom. We defend the rights of all\nsoftware users.\u201d JOIN\nDONATE\nSHOP Please send general FSF & GNU inquiries to\n<gnu@gnu.org>.\nThere are also other ways to contact\nthe FSF. Broken links and other corrections or suggestions can be sent\nto <bug-make@gnu.org>. Please see the Translations\nREADME for information on coordinating and contributing translations\nCommons Attribution-NoDerivatives 4.0 International License. Copyright Infringement Notification Updated:\n\n$Date: 2023/02/26 19:56:54 $",
+   "meta": {},
+   "links": [],
+   "source": "direct",
+   "final_url": "https://www.gnu.org/software/make/",
+   "status": 200,
+   "elapsed": 0.22,
+   "chars": 7309,
+   "ok": true,
+   "url": "https://www.gnu.org/software/make/",
+   "fetched_at": "2026-11-01T05:23:24+00:00",
+   "errors": [],
+   "search_title": "gnu.org https://www.gnu.org \u203a software \u203a make",
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "Home - Make: DIY Projects and Ideas for Makers",
+   "text": "##### POPULAR SEARCHES: - Arduino - CNC - Raspberry Pi - Woodworking - 3D Printing - IOT - Robot - Maker Faire\n### Halloween Spirit from the Make: Editorial Slack Archives star wars\n### OpenBDX Duck Robot: Learning to Waddle Halloween costume\n### A Shapeshifting LED Mask for Halloween maker faire orlando\n### 10 Things I Can\u2019t Wait to See at Maker Faire Orlando costumes\n### Taylor Waddell Made a Working BART Gate Halloween Costume\n## Fall Back and Build\n### DIY Arcade Joystick Kit\n### Makey:bit Adventure Board w/ micro:bit\n### Make: Ultimate Arduino Kit v.4\n### Starter Pack for Raspberry Pico W\n#### Makezine Substack - Make: \u201cGet on Board\u201d - Strange Love - Vienna\u2019s HAPPYLAB celebrates 20 years - Best New Products of Maker Faire Bay Area 2026\n## Projects From the Pages of Make: Magazine Fun & Games\n### Udderly Fantastic Game Controller DIY Projects\n### Surprise Visitors With a Trick & Treat Scare Box denim\n### BedazzLED Jean Jacket Drones\n### The Lightest FPV Whoop Drone Cars\n### Race Car Tire Pyrometer Energy & Sustainability\n### Amateur Scientist: Measure the Height of the Ozone Layer CNC & Machining\n### Easy DIY CNC Workholding Clamps 3D Printing & Imaging\n### Instant Prints! OpenCAL Layerless 3D Printing See More\n## Watch our Latest Video:\n#### Seen at Maker Faires - Kraj Kreations I am Kraj Kreations. I have a multitude of handmade pieces. I create, show and sell crayons, bracelets, earrings, paper, stained glass pieces, mosaic pieces, and cross stitching. I would love to talk to other fellow artists as well as share my art. - Hardware Store Harmonograph My harmonograph can draw MUSIC! - WASTEWORLD TOYS Animatronic RC vehicles & FPV action figures that zoom, fly, float, shoot, launch, and whatever the verb is to use a flamethrower! All figures & vehicles come from the WASTEWORLD of one person's imagination. (All ages welcome to play with the toys.) See More\n#### Make Things - Meet the Two-Minute Filmmakers - Maker Faire Rome - \"Get on BOARD\" Issue ready to go\n#### Stuff We Like at the Shed - Makedo Discover Kit - Computer Engineering for Babies - Make: Trucker Cap - Chompsaw Inventor's Workbook - Make: ESP32 Starter Pack - Makedo Explore Kit\n# More from Make: Magazine -\n### Udderly Fantastic Game Controller Make a squishy cow udder controller for your indie video game out of silicone and force-sensitive resistors, so players can squeeze teats to the beat! -\n### Review: Banan-a-Synth Is an Adorable Yellow Synthesizer Banan-a-Synth is just what it sounds like: a banana-sized, 20-note, capacitive touch keyboard that can mimic different instruments. And it sounds great. -\n### Omnibot Reborn: Giving a 1984 Robot Butler the Brain It Was Promised In 1984, Tomy sold a toy robot that promised a domestic future it couldn\u2019t quite deliver... -\n### Train a Balance Bot With Reinforcement Learning Teach a robot to balance, using reinforcement learning in simulation just like the big labs. -\n### Maker Faire Rome 2026: 400+ Stories Of Innovation, Creativity and Discovery Maker Faire Rome, this October 25-27 is where imagination and creativity become reality; where the frontiers of innovation are made visible. See More\n#### Find A Faire Near You! -\n#### Maker Faire Mittleres Rheintal November 7 & 8, 2026 Bendorf Untere Vallendarer Stra\u00dfe 26 Germany -\n#### Maker Faire Salzburg November 7, 2026 Salzburg Austria -\n#### Maker Faire Orlando November 7-8, 2026 Orlando FL United States -\n#### Maker Faire ITERA TEC November 12, 2026 Monterrey & Puebla Mexico -\n#### Maker Faire Olomouc November 15, 2026 Olomouc Czech Republic -\n#### Maker Faire Galicia November 20, 2026 Santiago de Compostela Galicia Spain -\n#### Maker Faire Rochester November 21, 2026 Rochester NY United States -\n#### Maker Faire Ogaki December 5-6, 2026 Ogaki Japan When you buy through links on our site, we may earn an affiliate commission.\n#### - - -\n##### - - - -\n##### - - - - - - - - - - Special Pinterest-only offer! One year of Make: Magazine for just $19.99\n##### Cookies: Here's The Actual Breakdown. Essential cookies run regardless - they're what keep the lights on and the sites operating. Analytics cookies are enabled by default. Advertising cookies require your consent. Optional cookies help us improve UX and target content smarter. Zero data sold. Zero Personally Identifiable Information shared with third parties. Our websites use cookies to improve your browsing experience. You can manage your preferences below. Some cookies are essential for basic site functionality and cannot be disabled. Analytics cookies\n\nAnalytics cookies We use Google Analytics and ActiveCampaign site tracking to understand how visitors use our sites and to personalize communications with existing subscribers. No personal data is shared with third parties for advertising purposes. Enabled by default - you can opt out by switching off the toggle above. Advertising & tracking cookies",
+   "meta": {
+    "description": "Make: celebrates your right to tweak, hack, and bend any technology to your will.",
+    "og:title": "Home - Make: DIY Projects and Ideas for Makers",
+    "og:description": "Magazine that celebrates your right to tweak, hack, and bend any technology to your own will.",
+    "og:site_name": "Make: DIY Projects and Ideas for Makers"
+   },
+   "links": [],
+   "source": "direct",
+   "final_url": "https://makezine.com/",
+   "status": 200,
+   "elapsed": 0.08,
+   "chars": 4900,
+   "ok": true,
+   "url": "https://makezine.com/",
+   "fetched_at": "2026-11-01T05:23:24+00:00",
+   "errors": [],
+   "search_title": "Make: DIY Projects and Ideas for Makers |",
+   "providers": [
+    "bing"
+   ]
+  }
+ ],
+ "failures": [],
+ "errors": {},
+ "numbers": [
+  [
+   "147",
+   1
+  ],
+  [
+   "4.0",
+   1
+  ],
+  [
+   "2023",
+   1
+  ],
+  [
+   "20 years",
+   1
+  ],
+  [
+   "2026",
+   1
+  ],
+  [
+   "1984",
+   1
+  ],
+  [
+   "1984,",
+   1
+  ],
+  [
+   "400",
+   1
+  ],
+  [
+   "8,",
+   1
+  ],
+  [
+   "7,",
+   1
+  ],
+  [
+   "12,",
+   1
+  ],
+  [
+   "15,",
+   1
+  ],
+  [
+   "20,",
+   1
+  ],
+  [
+   "21,",
+   1
+  ],
+  [
+   "6,",
+   1
+  ],
+  [
+   "$19.99",
+   1
+  ]
+ ],
+ "candidates": [
+  {
+   "title": "make.com https://www.make.com",
+   "url": "https://www.make.com/",
+   "snippet": "Make is an AI automation platform. You build automated workflows and AI agents visually, connect them to the apps and data you \u2026 2. [make.com https://www.make.com \u203a product](https://www.bing.com/ck/a?!&&p=0af587219baf03ed6c1eb74c32ffcae18c48ee6ddbd719bfbb93623e64ac33f6JmltdHM9MTc5MzQwNDgwMA&ptn=3&ve",
+   "provider": "bing",
+   "rank": 1,
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "make.com https://www.make.com \u203a product",
+   "url": "https://www.make.com/product",
+   "snippet": "Automate workflows, manage AI agents, and power innovation on Make's visually intuitive no-code development platform. Automate \u2026 3. [gnu.org https://www.gnu.org \u203a software \u203a make](https://www.bing.com/ck/a?!&&p=383ae8d9d725d8d0e525a873e08d03b043efeff7c82c99ddd3cf4cf13b2a4d52JmltdHM9MTc5MzQwNDgwMA&pt",
+   "provider": "bing",
+   "rank": 2,
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "gnu.org https://www.gnu.org \u203a software \u203a make",
+   "url": "https://www.gnu.org/software/make/",
+   "snippet": "Feb 26, 2023\u00b7 GNU Make has many powerful features for use in makefiles, beyond what other Make versions have. It can also \u2026 4. [make.com https://us1.make.com](https://www.bing.com/ck/a?!&&p=71cd9a29d1136a2f82d739f4e72f9d968ebc2773d5213a7ead65716e1243fa1dJmltdHM9MTc5MzQwNDgwMA&ptn=3&ver=2&hsh=4&fclid",
+   "provider": "bing",
+   "rank": 3,
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "wikipedia.org https://en.wikipedia.org \u203a wiki \u203a Make_(software)",
+   "url": "https://en.wikipedia.org/wiki/Make_(software)",
+   "snippet": "GNU Make (short gmake) is the standard implementation of Make for Linux and macOS. [16] It provides several extensions over the \u2026 6. [make.com https://academy-content.make.com](https://www.bing.com/ck/a?!&&p=4aa2ec075b26bceed27de0e6d90588231e60834b5ef5fc091be90a44aeaa97b8JmltdHM9MTc5MzQwNDgwMA&ptn=3",
+   "provider": "bing",
+   "rank": 4,
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "Make Academy",
+   "url": "https://academy-content.make.com/",
+   "snippet": "For anyone who wants to gain confidence in automation, grow their skills, and ultimately master Make. No prior experience is \u2026 7. [ GNU make ](https://www.bing.com/ck/a?!&&p=79e1ee33dc01341e8d9b97a952d1c867891372b60047955c31f639f95943416aJmltdHM9MTc5MzQwNDgwMA&ptn=3&ver=2&hsh=4&fclid=1d8d8e54-f2da-6",
+   "provider": "bing",
+   "rank": 5,
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "GNU make",
+   "url": "https://www.gnu.org/software/make/manual/make.html",
+   "snippet": "Feb 26, 2023\u00b7 In GNU make, the feature of remaking makefiles makes this practice obsolete\u2014you need never tell make explicitly to \u2026 8. [ make (1) - Linux manual page - man7.org](https://www.bing.com/ck/a?!&&p=11e1840a3e2d14ceb2d9d45c84fe11926d6e0d95da72e114d836d9da3e908434JmltdHM9MTc5MzQwNDgwMA&ptn=3",
+   "provider": "bing",
+   "rank": 6,
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "make (1) - Linux manual page - man7.org",
+   "url": "https://www.man7.org/linux/man-pages/man1/make.1.html",
+   "snippet": "To prepare to use make, you must write a file called the makefile that describes the relationships among files in your program, and \u2026 9. [ Make : DIY Projects and Ideas for Makers ](https://www.bing.com/ck/a?!&&p=6b20afbc1403f4e265364d873939d9ea9d614ab632054b5486dddad59f2fcde4JmltdHM9MTc5MzQwNDgwMA&",
+   "provider": "bing",
+   "rank": 7,
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "Make: DIY Projects and Ideas for Makers |",
+   "url": "https://makezine.com/",
+   "snippet": "Make: celebrates your right to tweak, hack, and bend any technology to your will. 10. [How can I install and use \" make \" in Windows ? - Stack Overflow ](https://www.bing.com/ck/a?!&&p=2621d9162edced0d3a61626cc1500efa3726428949be76de520c6d37cd5e283dJmltdHM9MTc5MzQwNDgwMA&ptn=3&ver=2&hsh=4&fclid=1d8d",
+   "provider": "bing",
+   "rank": 8,
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "How can I install and use \"make\" in Windows? - Stack Overflow",
+   "url": "https://stackoverflow.com/questions/32127524/how-can-i-install-and-use-make-in-windows",
+   "snippet": "GNU Make is available on Chocolatey. Install Chocolatey from here. Then, choco install make. Now you will be able to use Make on \u2026",
+   "provider": "bing",
+   "rank": 9,
+   "providers": [
+    "bing"
+   ]
+  },
+  {
+   "title": "make.com https://us1.make.com",
+   "url": "https://us1.make.com/",
+   "snippet": "",
+   "provider": "bing",
+   "rank": 10,
+   "providers": [
+    "bing"
+   ]
+  }
+ ],
+ "_json_path": "kb.json",
+ "summaries": {
+  "https://www.gnu.org/software/make/": [
+   "Make gets its knowledge of how to build your program from a file called the makefile, which lists each of the non-source files and how to compute it from other files.",
+   "As a result, if you change a few source files and then run Make, it does not need to recompile all of your program.",
+   "It updates only those non-source files that depend directly or indirectly on the source files that you changed. - Make is not limited to any particular language.",
+   "A brief summary is available by running make --help. ### Mailing lists Make has the following mailing lists: - bug-make for discussing most aspects of Make, including development and enhancement requests, as well as bug reports. - help-make for general user help and discussion.",
+   "Please use the mailing lists for contact. ### Licensing Make is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 3 of the License, or (at your option) any later version."
+  ],
+  "https://makezine.com/": [
+   "OpenCAL Layerless 3D Printing See More ## Watch our Latest Video: #### Seen at Maker Faires - Kraj Kreations I am Kraj Kreations.",
+   "I create, show and sell crayons, bracelets, earrings, paper, stained glass pieces, mosaic pieces, and cross stitching.",
+   "I would love to talk to other fellow artists as well as share my art. - Hardware Store Harmonograph My harmonograph can draw MUSIC! - WASTEWORLD TOYS Animatronic RC vehicles & FPV action figures that zoom, fly, float, shoot, launch, and whatever the verb is to use a flamethrower!",
+   "All figures & vehicles come from the WASTEWORLD of one person's imagination.",
+   "One year of Make: Magazine for just $19.99 ##### Cookies: Here's The Actual Breakdown."
+  ]
+ }
+}

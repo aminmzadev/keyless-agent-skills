@@ -1,0 +1,62 @@
+name: ci
+
+# Runs on every push and PR: the pack's own 42-test suite, on three Pythons,
+# with ffmpeg installed so the video tests actually run.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: system deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg poppler-utils
+
+      - name: python deps (all optional)
+        run: pip install --quiet "edge-tts>=7.3.1" pillow pypdf
+
+      - name: syntax check every script
+        run: |
+          set -e
+          for f in $(git ls-files '*.py'); do
+            python -m py_compile "$f"
+          done
+          find . -name __pycache__ -type d -exec rm -rf {} + || true
+
+      - name: smoke suite (fast: no network generations)
+        run: |
+          chmod +x test-all.sh install.sh sync.sh
+          ./test-all.sh --fast
+
+      - name: packaging tree builds and packs
+        run: |
+          chmod +x packaging/build.sh
+          bash packaging/build.sh --owner ci --scope ci
+          cd packaging/dist-repo
+          npm pack --dry-run 2>&1 | tail -20
+
+  # the full suite needs the free endpoints to be up; it is allowed to be red
+  # without blocking merges, but it is worth seeing
+  full-suite:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg poppler-utils
+      - run: pip install --quiet "edge-tts>=7.3.1" pillow
+      - run: chmod +x test-all.sh && ./test-all.sh

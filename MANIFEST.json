@@ -1,0 +1,417 @@
+{
+ "pack": "agent-media-skills",
+ "version": "1.2.0",
+ "date": "2026-11-01",
+ "requires_credentials": false,
+ "skills": [
+  {
+   "name": "skill-router",
+   "path": "skill-router",
+   "entry": "skill-router/scripts/route.py",
+   "runtime": "python3",
+   "commands": [
+    "<intent>",
+    "--list",
+    "--top N",
+    "--json",
+    "--explain",
+    "--skills-dir DIR"
+   ],
+   "use_when": [
+    "you are unsure which skill or script handles this request",
+    "an agent has the whole pack installed, or several packs, and must choose one entry point",
+    "you want a pasteable command for an intent, not a recommendation"
+   ],
+   "not_for": [
+    "doing the work itself",
+    "searching the web",
+    "generating or editing media"
+   ],
+   "keywords": [
+    "which skill",
+    "route",
+    "which tool",
+    "pick a skill",
+    "what should i use",
+    "entry point",
+    "dispatch",
+    "catalogue",
+    "list skills"
+   ],
+   "reads": "MANIFEST.json, or every SKILL.md frontmatter when there is no manifest",
+   "outputs": "skill name, score, and a ready-to-run command; --json for agents"
+  },
+  {
+   "name": "anon-image",
+   "path": "anon-image",
+   "entry": "anon-image/scripts/imgen.py",
+   "runtime": "python3",
+   "optional_deps": [
+    "Pillow"
+   ],
+   "commands": [
+    "gen",
+    "edit",
+    "batch",
+    "sheet",
+    "compare",
+    "probe"
+   ],
+   "use_when": [
+    "the user asks for an image, picture, illustration, mockup or visual asset",
+    "the user asks to edit, restyle, relight or re-render an existing image",
+    "a labelled contact sheet or a before/after comparison is needed"
+   ],
+   "not_for": [
+    "generative video",
+    "text rendering inside images"
+   ],
+   "keywords": [
+    "image",
+    "picture",
+    "photo",
+    "illustration",
+    "logo",
+    "art",
+    "draw",
+    "render",
+    "mockup",
+    "wallpaper",
+    "poster",
+    "texture",
+    "icon",
+    "portrait",
+    "edit image",
+    "restyle",
+    "inpaint"
+   ],
+   "composes_with": [
+    "ffmpeg-pipeline"
+   ]
+  },
+  {
+   "name": "anon-audio",
+   "path": "anon-audio",
+   "entry": "anon-audio/scripts/tts.py",
+   "runtime": "python3",
+   "optional_deps": [
+    "edge-tts>=7.3.1 (online, best quality)",
+    "piper-tts + one voice file (offline)",
+    "ffmpeg (mp3 conversion, concat)"
+   ],
+   "commands": [
+    "say",
+    "voices",
+    "concat",
+    "fetch-voice",
+    "probe"
+   ],
+   "use_when": [
+    "the user asks for narration, a voiceover, a podcast intro or audiobook audio",
+    "speech in a non-English language is needed (74 languages on the edge engine)",
+    "an agent needs to convert text to a playable mp3 with no key",
+    "the machine has no network or cannot reach Microsoft/Google",
+    "speech must be generated offline or inside an air-gapped container"
+   ],
+   "not_for": [
+    "music generation",
+    "singing",
+    "voice cloning",
+    "speech-to-text"
+   ],
+   "keywords": [
+    "audio",
+    "speech",
+    "voice",
+    "voiceover",
+    "narration",
+    "tts",
+    "speak",
+    "say",
+    "podcast",
+    "audiobook",
+    "sound",
+    "mp3",
+    "offline voice",
+    "read aloud"
+   ],
+   "composes_with": [
+    "ffmpeg-pipeline"
+   ],
+   "engines": {
+    "edge": "322 neural voices, 74 languages, needs edge-tts + network",
+    "gtts": "stdlib only, 190 chars/request, no Persian",
+    "piper": "offline neural TTS, ~2.7 s per sentence on CPU, voice in ~/.cache/agent-skills/piper"
+   }
+  },
+  {
+   "name": "ffmpeg-pipeline",
+   "path": "ffmpeg-pipeline",
+   "entry": "ffmpeg-pipeline/scripts/vidkit.py",
+   "runtime": "python3",
+   "hard_deps": [
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "commands": [
+    "video",
+    "slideshow",
+    "mux",
+    "frames",
+    "sheet",
+    "gif",
+    "normalize",
+    "speed",
+    "info",
+    "probe"
+   ],
+   "use_when": [
+    "the user wants a video, slideshow or preview clip built from stills",
+    "narration or music must be attached to video",
+    "a video needs frames extracted, a contact sheet, a gif, normalisation or speed change"
+   ],
+   "composes_with": [
+    "anon-image",
+    "anon-audio"
+   ],
+   "keywords": [
+    "video",
+    "mp4",
+    "cut",
+    "trim",
+    "crop",
+    "concat",
+    "join",
+    "slideshow",
+    "gif",
+    "captions",
+    "subtitles",
+    "burn",
+    "mux",
+    "audio track",
+    "compress",
+    "convert",
+    "frame",
+    "screenshot",
+    "watermark",
+    "speed",
+    "fade",
+    "montage",
+    "thumbnail"
+   ]
+  },
+  {
+   "name": "web-search",
+   "path": "web-search",
+   "entry": "web-search/scripts/search.py",
+   "runtime": "python3",
+   "commands": [
+    "<query>",
+    "--provider NAME",
+    "--group web|tech|academic|all",
+    "--json",
+    "--list-providers"
+   ],
+   "use_when": [
+    "the user asks to look something up and only pointers are needed",
+    "you need to check whether something exists before fetching it",
+    "you need results from a specific domain: code, papers, packages, news"
+   ],
+   "not_for": [
+    "reading page content (use fetch-page)",
+    "writing a cited report (use deep-research)"
+   ],
+   "groups": {
+    "web": [
+     "bing",
+     "ddg",
+     "wikipedia"
+    ],
+    "tech": [
+     "hn",
+     "stackexchange",
+     "github"
+    ],
+    "academic": [
+     "arxiv",
+     "openalex",
+     "europepmc",
+     "crossref"
+    ],
+    "all": "everything except pypi"
+   },
+   "transport_chain": [
+    "direct",
+    "r.jina.ai markdown",
+    "allorigins HTML",
+    "cors.lol HTML",
+    "codetabs HTML"
+   ],
+   "resilience": "each relay gets 2 tries, then a 75 s cooldown; the markdown reader disables itself for the run on 401/403/429; results whose text shares no distinctive query word are treated as off-topic and the next transport is tried",
+   "keywords": [
+    "search",
+    "look up",
+    "find",
+    "google",
+    "links",
+    "sources",
+    "latest",
+    "release",
+    "version",
+    "documentation",
+    "docs",
+    "error",
+    "traceback",
+    "exception",
+    "stackoverflow",
+    "library",
+    "package",
+    "compare",
+    "which is better",
+    "news"
+   ]
+  },
+  {
+   "name": "fetch-page",
+   "path": "fetch-page",
+   "entry": "fetch-page/scripts/fetch.py",
+   "runtime": "python3",
+   "optional_deps": [
+    "pdftotext or pypdf"
+   ],
+   "commands": [
+    "URL...",
+    "--out DIR",
+    "--json",
+    "--max-chars N",
+    "--links",
+    "--text",
+    "--no-cache"
+   ],
+   "use_when": [
+    "you have a specific URL and need its readable content",
+    "a plain request returned a cookie wall, a JS shell or a 403",
+    "you need a PDF as text",
+    "several pages must be read in parallel and saved to disk"
+   ],
+   "not_for": [
+    "finding URLs (use web-search)",
+    "authenticated or paywalled pages"
+   ],
+   "fallback_chain": [
+    "direct",
+    "reader:jina",
+    "reader:allorigins",
+    "reader:cors.lol",
+    "reader:codetabs",
+    "wayback"
+   ],
+   "keywords": [
+    "url",
+    "page",
+    "article",
+    "read",
+    "fetch",
+    "download",
+    "summarise this link",
+    "scrape",
+    "html",
+    "markdown",
+    "pdf",
+    "extract text",
+    "changelog",
+    "terms",
+    "documentation page"
+   ]
+  },
+  {
+   "name": "deep-research",
+   "path": "deep-research",
+   "entry": "deep-research/scripts/research.py",
+   "secondary_entries": [
+    "deep-research/scripts/search.py",
+    "deep-research/scripts/fetch.py"
+   ],
+   "runtime": "python3",
+   "optional_deps": [
+    "pdftotext or pypdf"
+   ],
+   "commands": [
+    "research.py QUESTION",
+    "search.py QUERY",
+    "fetch.py URL...",
+    "--follow N",
+    "--follow-budget M"
+   ],
+   "use_when": [
+    "the question needs current facts, prices, versions or news",
+    "the user asks to look something up, verify a claim or compare options",
+    "a written answer needs citations and a readable trail",
+    "the question needs the sources behind the sources (specs, repos, issues)"
+   ],
+   "not_for": [
+    "paywalled content",
+    "interactive/authenticated pages"
+   ],
+   "composes_with": [
+    "web-search",
+    "fetch-page"
+   ],
+   "note": "orchestrator: search + fetch + report. Installs on its own; the other two are the same scripts published as separate skills.",
+   "fallback_chain": [
+    "direct",
+    "reader:jina",
+    "reader:allorigins",
+    "reader:cors.lol",
+    "reader:codetabs",
+    "wayback"
+   ],
+   "keywords": [
+    "research",
+    "investigate",
+    "report",
+    "sources",
+    "cite",
+    "evidence",
+    "compare",
+    "verify",
+    "fact check",
+    "deep dive",
+    "summary with citations",
+    "market",
+    "pricing",
+    "what does the research say",
+    "answer with references"
+   ]
+  }
+ ],
+ "entry_points": {
+  "test": "./test-all.sh",
+  "install_optional_deps": "./install.sh",
+  "readme": "README.md",
+  "presentation": "../AGENT-SKILLS.md",
+  "sync": "./sync.sh",
+  "cache": "./shared/cachectl.py",
+  "guide": "GUIDE.md"
+ },
+ "cache": {
+  "root": "$AGENT_SKILLS_CACHE or ~/.cache/agent-skills",
+  "namespaces": [
+   "search (1h)",
+   "fetch (24h)",
+   "piper (never pruned)",
+   "kv/<ns> (generic)"
+  ],
+  "cli": [
+   "stats",
+   "prune --days N",
+   "clear <ns|all>",
+   "get/put <ns> <key>"
+  ],
+  "vendored": [
+   "web-search/scripts/_cachekit.py",
+   "fetch-page/scripts/_cachekit.py",
+   "deep-research/scripts/_cachekit.py"
+  ]
+ }
+}

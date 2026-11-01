@@ -1,0 +1,37 @@
+NOTICE — third-party services, and what this package is not
+===========================================================
+
+This package is a set of clients. It ships no models, no binaries and no
+content from any service. Every skill talks to endpoints operated by other
+people, and each of those endpoints has its own terms.
+
+Not affiliated, not endorsed
+----------------------------
+This project is not affiliated with, endorsed by, or supported by Microsoft,
+Google, DuckDuckGo, Bing, Jina AI, Cloudflare, Cors.lol, AllOrigins,
+FreeAPI, Vheer, the FFmpeg project, the Piper project, Rhasspy, or any other
+service or project named in the documentation. Names are used descriptively.
+
+Consumer endpoints, not contracts
+---------------------------------
+Several skills call free public endpoints that were never published as APIs
+(Google Translate TTS, DuckDuckGo and Bing result pages, free image-generation
+sites). These can change, rate-limit or block at any time, and their terms of
+service may prohibit automated use. You are responsible for how you use them:
+
+  * keep volume human (the skills are built to be useful, not to be a farm)
+  * read the reference/ file of the skill you intend to use commercially
+  * do not present outputs as endorsed by the underlying provider
+
+Third-party software you install yourself
+-----------------------------------------
+install.sh installs or suggests: ffmpeg (LGPL/GPL), poppler (GPL),
+Pillow (MIT-CMU), edge-tts (GPL-3.0), piper-tts (MIT) and Piper voice models,
+which carry their own licences (most voice datasets are CC BY 4.0 or similar —
+check the voice card). None of these are bundled here; nothing is vendored.
+
+Content fetched at runtime
+--------------------------
+fetch-page and deep-research retrieve third-party pages and quote sentences
+from them in reports. Copyright in that text stays with its authors. Citing is
+not relicensing: do not redistribute fetched corpora.
