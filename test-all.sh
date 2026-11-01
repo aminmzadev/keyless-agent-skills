@@ -36,6 +36,7 @@ run "sheet"             python3 "$here/anon-image/scripts/imgen.py" sheet "$work
 echo "== packaging / install-ability =="
 run "SKILL.md frontmatter parses" python3 "$here/packaging/lint_skills.py" "$here"
 run "workflow yaml parses"   python3 "$here/packaging/lint_workflows.py" "$here"
+run "python 3.10 syntax"     python3 "$here/packaging/lint_py310.py" "$here"
 if command -v npm >/dev/null; then
   run "publishable tree builds" bash -c "bash '$here/packaging/build.sh' --owner ci --name keyless-agent-skills >/dev/null && cd '$here/packaging/dist-repo' && npm pack --dry-run 2>&1 | grep -q 'total files'"
 else sk "publishable tree (npm not installed)"; fi

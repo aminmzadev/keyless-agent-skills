@@ -332,8 +332,13 @@ def to_markdown(res):
         title = (d.get("title") or d.get("search_title") or "").replace("|", "/")[:70]
         hop = d.get("hop", 1)
         via = d.get("via_link_from")
-        vtxt = f"link from {re.sub(r'^https?://(www\.)?', '', via).split('/')[0]}" if via \
-            else str(d.get("source"))
+        if via:
+            # hoisted out of the f-string: Python < 3.12 forbids backslashes
+            # inside an f-string expression part (PEP 701 lifted that)
+            vhost = re.sub(r"^https?://(www\.)?", "", via).split("/")[0]
+            vtxt = f"link from {vhost}"
+        else:
+            vtxt = str(d.get("source"))
         L.append(f"| [{i}] | {title} | {dom} | {d.get('chars', 0)} | {hop} | "
                  f"{vtxt} | {d['url']} |")
     L.append("")
