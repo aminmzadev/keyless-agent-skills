@@ -17,7 +17,7 @@ npm (name reserved, first publish pending): `keyless-agent-skills` — 84.8 kB p
 34 files, **no lifecycle scripts**, no binaries, no voice models.
 
 Prefer files? The [v1.2.0 release](https://github.com/aminmzadev/keyless-agent-skills/releases/tag/v1.2.0)
-has the bundle zip plus one zip per skill and a `SHA256SUMS`. Or just clone and run
+has the bundle zip plus one zip per skill and a `SHA256SUMS.txt`. Or just clone and run
 `./install.sh --check` to see what your machine already has.
 
 ## Start here

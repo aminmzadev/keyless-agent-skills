@@ -4,6 +4,10 @@ name: release
 # and attaches them to a GitHub Release, with checksums. Releases are the right
 # home for the zips: they are versioned, immutable-ish, and an installer can
 # point at a stable URL. npm is for the package; GitHub Releases for the files.
+#
+# Asset names are never re-used across runs: clobbering the same asset name makes
+# the release CDN serve stale bytes to anonymous downloads for a while, which
+# looks exactly like a corrupted release. New name = new object.
 on:
   push:
     tags: ["v*"]
@@ -36,7 +40,7 @@ jobs:
           for s in skill-router anon-image anon-audio ffmpeg-pipeline web-search fetch-page deep-research; do
             zip -qr "dist/$s-v$V.zip" "$s" -x "*/__pycache__/*" "*.pyc"
           done
-          (cd dist && sha256sum *.zip > SHA256SUMS && cat SHA256SUMS)
+          (cd dist && sha256sum *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
       - name: attach to release
         env:
