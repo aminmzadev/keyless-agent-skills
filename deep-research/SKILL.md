@@ -1,6 +1,6 @@
 ---
 name: deep-research
-description: Web search, page reading and multi-source deep research with no API key — twenty providers, four-stage fetch fallback (direct → relays → vendor scraper → Wayback), relevance gating, cross-provider agreement ranking, and cited markdown reports. Use whenever a question needs current facts, verification, comparison of products/APIs, or "look this up and tell me what you find".
+description: Web search, page reading and multi-source deep research with no API key — twenty providers, five-stage fetch fallback (direct → relays → two vendor readers → Wayback), relevance gating, cross-provider agreement ranking, and cited markdown reports. Use whenever a question needs current facts, verification, comparison of products/APIs, or "look this up and tell me what you find".
 version: 1.2.0
 license: MIT
 ---
@@ -68,7 +68,7 @@ PDFs are handled (pdftotext → pypdf → reader proxy). Everything is cached fo
 2. searches all of them in parallel
 3. merges / dedupes / ranks, max 2 results per domain
 4. filters off-topic pages with a relevance gate *before* reading them
-5. fetches the survivors in parallel with the four-stage fallback
+5. fetches the survivors in parallel with the five-stage fallback
 6. scores sentences by idf-weighted overlap with the question and extracts the
    ones that answer it, deduping at 70 % similarity
 7. pulls out every number, unit and date for sanity-checking

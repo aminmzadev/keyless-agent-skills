@@ -34,6 +34,20 @@ def _load_fetch_module():
 
 fetch_mod = _load_fetch_module()
 
+# Nothing listens on port 1, so an un-redirected vendor call fails instantly and
+# offline. Tests that want a vendor to answer point these at their local _Site.
+DEAD_VENDOR = "http://127.0.0.1:1"
+
+
+def setUpModule():
+    os.environ["FIRECRAWL_SCRAPE_URL"] = DEAD_VENDOR + "/v2/scrape"
+    os.environ["EXA_MCP_URL"] = DEAD_VENDOR + "/mcp"
+
+
+def tearDownModule():
+    os.environ.pop("FIRECRAWL_SCRAPE_URL", None)
+    os.environ.pop("EXA_MCP_URL", None)
+
 
 # ---------------------------------------------------------------- test servers
 class _Site:
@@ -44,6 +58,14 @@ class _Site:
         self.vendor_requests = 0
         self.vendor_status = 200
         self.vendor_payload: dict = {}
+        self.exa_requests = 0
+        self.exa_bodies: list[dict] = []
+        self.exa_status = 200
+        self.exa_payload: dict = {"jsonrpc": "2.0", "id": 1,
+                                  "error": {"code": -1, "message": "exa not configured here"}}
+        self.exa_sse = False          # answer as text/event-stream instead of JSON
+        self.exa_raw: str | None = None
+        self.exa_headers: dict = {}
         self.page_html = "<html><head><title>t</title></head><body><p>hi</p></body></html>"
         self.site = self
 
@@ -79,6 +101,34 @@ class _Site:
                     payload = json.dumps(outer.vendor_payload).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                elif self.path.startswith("/mcp"):
+                    outer.exa_requests += 1
+                    outer.exa_headers = dict(self.headers)
+                    raw_body = self.rfile.read(length)
+                    try:
+                        outer.exa_bodies.append(json.loads(raw_body.decode() or "{}"))
+                    except json.JSONDecodeError:
+                        outer.exa_bodies.append({"__unparsed__": raw_body.decode()})
+                    if outer.exa_status != 200:
+                        msg = b'{"error":"nope"}'
+                        self.send_response(outer.exa_status)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(msg)))
+                        self.end_headers()
+                        self.wfile.write(msg)
+                        return
+                    if outer.exa_raw is not None:
+                        payload = outer.exa_raw.encode()
+                    else:
+                        blob = json.dumps(outer.exa_payload)
+                        payload = (f"event: message\ndata: {blob}\n\n".encode()
+                                   if outer.exa_sse else blob.encode())
+                    self.send_response(200)
+                    self.send_header("Content-Type",
+                                     "text/event-stream" if outer.exa_sse else "application/json")
                     self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
                     self.wfile.write(payload)
@@ -138,6 +188,11 @@ VENDOR_OK = {"success": True, "data": {
 }}
 
 
+EXA_OK = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text":
+    "# Exa Page\n\nURL: https://example.test/paid\nPublished: 2026-10-01\n\n"
+    + "page body from exa " * 40}], "isError": False}}
+
+
 class DeadlineTests(unittest.TestCase):
     """A stage that ignores its socket timeouts must not be able to hang the caller."""
 
@@ -193,7 +248,7 @@ class VendorStageTests(unittest.TestCase):
 
     def tearDown(self):
         self.site.close()
-        os.environ.pop("FIRECRAWL_SCRAPE_URL", None)
+        os.environ["FIRECRAWL_SCRAPE_URL"] = DEAD_VENDOR + "/v2/scrape"
         os.environ.pop("FETCH_VENDOR", None)
 
     def _thin_page(self):
@@ -308,7 +363,7 @@ class StageShareTests(unittest.TestCase):
         finally:
             fetch_mod.fetch_reader = original
             site.close()
-            os.environ.pop("FIRECRAWL_SCRAPE_URL", None)
+            os.environ["FIRECRAWL_SCRAPE_URL"] = DEAD_VENDOR + "/v2/scrape"
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["source"], "vendor:firecrawl")
         self.assertEqual(site.vendor_requests, 1, "the vendor stage never got its turn")
@@ -333,11 +388,118 @@ class StageShareTests(unittest.TestCase):
         finally:
             fetch_mod.fetch_reader = original
             site.close()
-            os.environ.pop("FIRECRAWL_SCRAPE_URL", None)
+            os.environ["FIRECRAWL_SCRAPE_URL"] = DEAD_VENDOR + "/v2/scrape"
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["source"], "vendor:firecrawl")
         # reader share is 0.40 * 8 = 3.2s, so the vendor stage still had room
         self.assertLess(elapsed, 8)
+
+
+class ExaStageTests(unittest.TestCase):
+    """Stage 4: Exa's anonymous MCP reader, ahead of Wayback."""
+
+    def setUp(self):
+        self.site = _Site()
+        os.environ["EXA_MCP_URL"] = f"{self.site.base}/mcp"
+        os.environ["FIRECRAWL_SCRAPE_URL"] = f"{self.site.base}/v2/scrape"
+        self.site.page_html = "<html><body>too thin</body></html>"
+        self.site.vendor_status = 500           # Firecrawl fails, Exa must catch
+        self.site.exa_payload = EXA_OK
+        self.orig = (fetch_mod.fetch_direct, fetch_mod.fetch_reader, fetch_mod.fetch_archive)
+        fetch_mod.fetch_direct = lambda url, t, keep_links=False: (_ for _ in ()).throw(RuntimeError("blocked"))
+        fetch_mod.fetch_reader = lambda url, t, keep_links=False: (_ for _ in ()).throw(RuntimeError("blocked"))
+
+    def tearDown(self):
+        fetch_mod.fetch_direct, fetch_mod.fetch_reader, fetch_mod.fetch_archive = self.orig
+        self.site.close()
+        os.environ["EXA_MCP_URL"] = DEAD_VENDOR + "/mcp"
+        os.environ["FIRECRAWL_SCRAPE_URL"] = DEAD_VENDOR + "/v2/scrape"
+
+    def _fetch(self, **kw):
+        kw.setdefault("timeout", 10)
+        kw.setdefault("deadline", 20)
+        return fetch_mod.fetch(f"{self.site.base}/page", ttl=0, retries=0, **kw)
+
+    def test_exa_answers_when_the_other_vendors_fail(self):
+        self.site.vendor_status = 503
+        res = self._fetch()
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["source"], "vendor:exa")
+        self.assertEqual(res["title"], "Exa Page")
+        self.assertGreater(res["chars"], 400)
+        self.assertEqual(self.site.exa_requests, 1)
+
+    def test_request_is_a_jsonrpc_call_with_a_real_character_budget(self):
+        self.site.vendor_status = 503
+        self._fetch()
+        body = self.site.exa_bodies[0]
+        self.assertEqual(body["method"], "tools/call")
+        self.assertEqual(body["params"]["name"], "web_fetch_exa")
+        args = body["params"]["arguments"]
+        self.assertEqual(args["urls"], [f"{self.site.base}/page"])
+        # the default is ~3,000 chars; a fetch stage must ask for far more
+        self.assertGreaterEqual(args["maxCharacters"], 20000)
+
+    def test_server_sent_events_body_is_parsed(self):
+        self.site.vendor_status = 503
+        self.site.exa_sse = True
+        res = self._fetch()
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["source"], "vendor:exa")
+        self.assertIn("page body from exa", res["text"])
+
+    def test_exa_runs_before_wayback(self):
+        calls = []
+        fetch_mod.fetch_archive = lambda url, t, keep_links=False: (
+            calls.append("archive") or (_ for _ in ()).throw(RuntimeError("no snapshot")))
+        self.site.vendor_status = 503
+        res = self._fetch()
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["source"], "vendor:exa")
+        self.assertEqual(calls, [], "Wayback was tried before Exa")
+
+    def test_jsonrpc_error_fails_over_to_wayback(self):
+        self.site.exa_payload = {"jsonrpc": "2.0", "id": 1,
+                                 "error": {"code": -32000, "message": "rate limited"}}
+        self.site.vendor_status = 503
+        fetch_mod.fetch_archive = lambda url, t, keep_links=False: {
+            "title": "archived", "text": "archive copy " * 40,
+            "meta": {"content_type": "markdown", "vendor": "wayback", "status_code": 200},
+            "links": [], "source": "archive:wayback", "final_url": url,
+            "status": 200, "elapsed": 0.1}
+        res = self._fetch()
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["source"], "archive:wayback")
+        self.assertTrue(any("exa" in e for e in res["errors"]), res["errors"])
+
+    def test_exa_carries_our_identity_and_no_credential(self):
+        self.site.vendor_status = 503
+        self._fetch()
+        headers = {k.lower(): v for k, v in self.site.exa_headers.items()}
+        self.assertNotIn("authorization", headers, "sent a credential Exa never asked for")
+        self.assertIn("keyless-agent-skills", headers.get("user-agent", ""))
+        self.assertIn("text/event-stream", headers.get("accept", ""))
+
+    def test_no_vendor_disables_the_exa_stage_too(self):
+        res = self._fetch(use_vendor=False, use_archive=False)
+        self.assertFalse(res["ok"])
+        self.assertEqual(self.site.exa_requests, 0)
+
+    def test_exa_is_never_retried(self):
+        """One attempt per borrowed endpoint, even when it errors."""
+        self.site.vendor_status = 503
+        self.site.exa_payload = {"jsonrpc": "2.0", "id": 1,
+                                 "error": {"code": -1, "message": "slow down"}}
+        res = self._fetch(use_archive=False)
+        self.assertFalse(res["ok"])
+        self.assertEqual(self.site.exa_requests, 1, res["errors"])
+
+    def test_exa_preamble_is_stripped(self):
+        self.site.vendor_status = 503
+        res = self._fetch()
+        self.assertNotIn("Published: 2026-10-01", res["text"])
+        self.assertNotIn("URL: https://example.test/paid", res["text"])
+        self.assertTrue(res["text"].startswith("# Exa Page"), res["text"][:80])
 
 
 class StageReportingTests(unittest.TestCase):
@@ -356,7 +518,7 @@ class StageReportingTests(unittest.TestCase):
     def tearDown(self):
         fetch_mod.fetch_reader = self.original_reader
         self.site.close()
-        os.environ.pop("FIRECRAWL_SCRAPE_URL", None)
+        os.environ["FIRECRAWL_SCRAPE_URL"] = DEAD_VENDOR + "/v2/scrape"
 
     def test_success_after_a_cut_stage_is_not_a_deadline_trip(self):
         self.site.page_html = "<html><body>too thin</body></html>"

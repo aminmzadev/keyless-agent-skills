@@ -1,7 +1,7 @@
 ---
 name: web-search
 description: Keyless multi-provider web search for agents. Twenty providers behind one command — seventeen classic ones plus an opt-in vendor tier (Keenable, Firecrawl, Exa) that returns page excerpts instead of teasers — with automatic fallback, query relaxation, cross-provider agreement ranking and domain diversity. Use for any "look this up", "what is the latest", "find me a library/tool/paper" request when you only need results, not a full report.
-version: 1.3.0
+version: 1.3.1
 license: MIT
 ---
 
@@ -147,5 +147,10 @@ so the agent often skips a fetch entirely.
 
 The reason they stay opt-in: they are undocumented free tiers with no SLA. They
 can start enforcing a key, or vanish, without notice. Use them as a supplement
-(`--with-vendor`), not as the only path. `exa` is search-only on purpose — its
-extract returns a constant ~3,100 characters per page, i.e. a hard truncation.
+(`--with-vendor`), not as the only path.
+
+If you need full text from a result, `fetch-page` reads it: `keenable` has no
+extract endpoint at all, `firecrawl` and `exa` both do, and `fetch-page` uses
+them as stages 3 and 4. (`web_fetch_exa` returns only ~3,000 chars when
+`maxCharacters` is unset — an earlier version of this file called that a hard
+cap and it is not.)

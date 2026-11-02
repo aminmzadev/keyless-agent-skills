@@ -4,14 +4,16 @@
 # Edit there, then run ./sync.sh (synced 2026-11-02).
 # ---
 """
-fetch.py — turn any URL into clean markdown for an agent, with three fallbacks.
+fetch.py — turn any URL into clean markdown for an agent, with four fallbacks.
 
   1. direct      : urllib + browser UA, gzip, redirect following, HTML->text
   2. reader      : r.jina.ai markdown -> CORS-proxied HTML (allorigins, cors.lol,
                    codetabs), whichever answers first
   3. vendor      : Firecrawl's anonymous scrape endpoint — renders JS, survives
                    Cloudflare, and is the only stage that reaches some pages
-  4. archive     : Wayback Machine snapshot, for pages that are gone or blocked
+  4. exa         : Exa's anonymous MCP web_fetch_exa — second reader of last
+                   resort, returns the page's own markdown
+  5. archive     : Wayback Machine snapshot, for pages that are gone or blocked
 
 Every call has a hard wall-clock deadline (--deadline, default 45 s). Individual
 stages already carry socket timeouts, but a dead relay or a DNS black hole can
@@ -405,6 +407,78 @@ def fetch_vendor(url, timeout, keep_links=False):
             "elapsed": round(time.time() - t0, 2)}
 
 
+EXA_MCP = "https://mcp.exa.ai/mcp"
+EXA_MAX_CHARS = 50000          # what we ask for; the caller's max_chars still wins
+
+
+def _exa_endpoint():
+    return os.environ.get("EXA_MCP_URL", EXA_MCP)
+
+
+def _sse_json(raw):
+    """Exa's MCP answers either plain JSON or server-sent events. Handle both."""
+    raw = (raw or "").strip()
+    if raw.startswith("{"):
+        return json.loads(raw)
+    data = "\n".join(ln[5:].strip() for ln in raw.splitlines() if ln.startswith("data:"))
+    if not data:
+        raise RuntimeError("exa: empty body")
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError:
+        return json.loads("".join(data.split()))
+
+
+def fetch_exa(url, timeout, keep_links=False):
+    """Stage 4. Exa's anonymous MCP `web_fetch_exa` tool.
+
+    Kept behind Wayback because it is the second borrower in the chain and
+    Wayback is a public archive with an explicit no-SLA promise of its own.
+    Ahead of it because when both answer, Exa returns the page's own markdown
+    while the archive returns whatever snapshot it happens to hold.
+
+    maxCharacters matters: left unset, this endpoint returns ~3,000 characters
+    and looks like a hard cap. Asking for 50,000 returned 31,442 on a long
+    Wikipedia article, so the real ceiling is on their side, not ours.
+
+    Disable with --no-vendor or FETCH_VENDOR=0, like the Firecrawl stage.
+    """
+    t0 = time.time()
+    body = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "web_fetch_exa",
+                   "arguments": {"urls": [url], "maxCharacters": EXA_MAX_CHARS}},
+    }).encode()
+    req = urllib.request.Request(
+        _exa_endpoint(), data=body, method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": VENDOR_UA,
+                 "Accept": "application/json, text/event-stream"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        payload = _sse_json(r.read().decode("utf-8", "replace"))
+    if isinstance(payload, dict) and payload.get("error"):
+        err = payload["error"]
+        raise RuntimeError("exa: " + str((err or {}).get("message") or err)[:110])
+    result = (payload or {}).get("result") or {}
+    parts = [c.get("text") or "" for c in (result.get("content") or [])
+             if isinstance(c, dict)]
+    text = "\n".join(p for p in parts if p.strip())
+    if not text.strip():
+        raise RuntimeError("exa: empty result")
+    # drop Exa's own "URL:"/"Published:" preamble, keep the page
+    lines = [ln for ln in text.splitlines()
+             if not ln.startswith(("URL: http", "Published: "))]
+    text = "\n".join(lines).strip()
+    title = url
+    for ln in lines:
+        if ln.startswith("# "):
+            title = ln[2:].strip() or url
+            break
+    return {"title": title, "text": text,
+            "meta": {"content_type": "markdown", "vendor": "exa", "status_code": 200},
+            "links": [], "source": "vendor:exa", "final_url": url, "status": 200,
+            "elapsed": round(time.time() - t0, 2)}
+
+
 class StageTimeout(RuntimeError):
     """A stage ignored its own socket timeouts and had to be abandoned."""
 
@@ -450,7 +524,8 @@ def cache_get(url, ttl):
     if not (ttl and os.path.exists(p)):
         return None
     try:
-        d = json.load(open(p))
+        with open(p) as fh:
+            d = json.load(fh)
         if time.time() - d.get("_ts", 0) <= ttl:
             d["cached"] = True
             d["source"] = d.get("source", "cache")
@@ -465,7 +540,8 @@ def cache_put(url, data):
     d = dict(data)
     d["_ts"] = time.time()
     try:
-        json.dump(d, open(cache_path(url), "w"))
+        with open(cache_path(url), "w") as fh:      # a leak here fails the -W error runs
+            json.dump(d, fh)
     except Exception:
         pass
 
@@ -499,6 +575,7 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
         chain.append(("reader", lambda t: fetch_reader(url, t, keep_links), 0.40))
     if _vendor_enabled(use_vendor):
         chain.append(("vendor", lambda t: fetch_vendor(url, t, keep_links), 0.50))
+        chain.append(("exa", lambda t: fetch_exa(url, t, keep_links), 0.45))
     if use_archive:
         chain.append(("archive", lambda t: fetch_archive(url, t, keep_links), 0.30))
 
@@ -543,6 +620,10 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
                 break
             except Exception as e:
                 errors.append(f"{name}: {str(e)[:110]}")
+                # borrowed endpoints get one attempt: a refused connection to a
+                # free vendor is a no, not an invitation to knock twice
+                if name in ("vendor", "exa"):
+                    break
             time.sleep(min(0.8 * (attempt + 1), max(0.0, hard_end - time.monotonic())))
 
     return {"ok": False, "url": url, "title": "", "text": "", "chars": 0,

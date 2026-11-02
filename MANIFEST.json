@@ -1,6 +1,6 @@
 {
  "pack": "agent-media-skills",
- "version": "1.3.0",
+ "version": "1.4.0",
  "date": "2026-11-02",
  "requires_credentials": false,
  "skills": [

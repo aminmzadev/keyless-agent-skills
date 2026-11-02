@@ -80,9 +80,9 @@ Not in `--all` and not in any default group. Add with `--group vendor` or `--wit
 
 | Provider | Transport | Measured 2026-11-02 | Notes |
 |---|---|---|---|
-| `keenable` | `POST api.keenable.ai/v1/search/public` | 0.2 s, excerpts capped at 1,200 chars | sends `X-Keenable-Title: keyless-agent-skills` (an app id is required; ours, not a borrowed one) |
-| `firecrawl` | `POST api.firecrawl.dev/v2/search` | 0.4 s, 400–700 char snippets, best domain diversity | no `Authorization` header at all |
-| `exa` | `POST mcp.exa.ai/mcp` JSON-RPC `web_search_exa` | 0.5 s, ~2,700 char excerpts | search only — its extract truncates every page at ~3,100 chars |
+| `keenable` | `POST api.keenable.ai/v1/search/public` | 0.2 s, excerpts capped at 1,200 chars | sends `X-Keenable-Title: keyless-agent-skills` (an app id is required; ours, not a borrowed one); **search only** — `/v1/extract`, `/v1/read`, `/v1/scrape`, `/v1/reader` all 404 |
+| `firecrawl` | `POST api.firecrawl.dev/v2/search`, `POST api.firecrawl.dev/v2/scrape` | 0.4 s, 400–700 char snippets, best domain diversity | no `Authorization` header at all; the only vendor with both search and extract |
+| `exa` | `POST mcp.exa.ai/mcp` JSON-RPC `web_search_exa` + `web_fetch_exa` | search 0.5 s, ~2,700 char excerpts; fetch 0.3 s, up to ~31 k chars | search **and** extract. `web_fetch_exa` returns ~3,000 chars unless `maxCharacters` is passed — that default is not a hard cap |
 
 Why opt-in: these are undocumented free tiers. They answered 5/5 queries on the day
 our classic general providers were blocked from this host, but they can require a key

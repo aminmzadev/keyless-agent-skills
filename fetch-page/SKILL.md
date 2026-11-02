@@ -1,13 +1,13 @@
 ---
 name: fetch-page
-description: Turn any URL into clean markdown for an agent, with a four-stage fallback (direct → two independent kinds of relay → a vendor scraper that renders JS and gets past bot walls → Wayback Machine), a hard wall-clock deadline, PDF support and a 24-hour cache. Use whenever you have a URL and need its readable content — documentation, articles, changelogs, terms pages, papers, or a page a plain request cannot get through.
-version: 1.3.0
+description: Turn any URL into clean markdown for an agent, with a five-stage fallback (direct → two independent kinds of relay → two vendor readers that render JS and get past bot walls → Wayback Machine), a hard wall-clock deadline, PDF support and a 24-hour cache. Use whenever you have a URL and need its readable content — documentation, articles, changelogs, terms pages, papers, or a page a plain request cannot get through.
+version: 1.4.0
 license: MIT
 ---
 
 # fetch-page
 
-Give it URLs, get markdown. Four transports per URL, in order, so a blocked or
+Give it URLs, get markdown. Five transports per URL, in order, so a blocked or
 JS-heavy page is not a dead end — and a hard deadline, so a hostile page cannot
 hang the agent that asked.
 
@@ -29,7 +29,7 @@ fetch.py url1 url2 url3 --out pages/ --json
 fetch.py https://example.com --links            # also extract the links
 fetch.py https://example.com --text             # print the text, no files
 fetch.py https://example.com --deadline 15      # give up after 15s, no matter what
-fetch.py https://example.com --no-vendor        # four stages -> three (no vendor call)
+fetch.py https://example.com --no-vendor        # five stages -> three (no vendor calls)
 ```
 
 ## The fallback chain
@@ -38,7 +38,27 @@ fetch.py https://example.com --no-vendor        # four stages -> three (no vendo
 |---|---|---|
 | 1. direct | urllib, browser UA, gzip, redirects | normal pages; a hand-written `html.parser` extractor drops nav/footer/aside/forms and cookie/subscribe boilerplate, keeps headings and list structure |
 | 2. reader | `r.jina.ai/<url>` markdown, then the CORS relays (`allorigins` → `cors.lol` → `codetabs`) | JS-rendered pages, anti-bot walls, PDFs when no local extractor exists |
-| 3. archive | Wayback Machine snapshot | pages that are gone, moved or blocked entirely |
+| 3. vendor:firecrawl | `api.firecrawl.dev/v2/scrape`, no credential | the hard walls: JS shells, Cloudflare, 403-to-plain-HTTP pages |
+| 4. vendor:exa | `mcp.exa.ai/mcp` JSON-RPC `web_fetch_exa`, no credential | the same walls when Firecrawl is down or rate-limited; returns the page's own markdown |
+| 5. archive | Wayback Machine snapshot | pages that are gone, moved or blocked entirely |
+
+**Why two vendor readers, and why Exa sits before Wayback.** Firecrawl is the
+better scraper when it works; it is also a single borrowed endpoint that can be
+rate-limited or down. Exa's MCP reader covers that gap with the page's own
+markdown instead of an archived snapshot — when both answer, the live page beats
+whatever copy the archive happened to crawl. Both are gated by the same
+`--no-vendor` / `FETCH_VENDOR=0` switch and both get exactly one attempt per URL,
+because knocking twice on a free endpoint is how you get blocked.
+
+Measured on 2026-11-02 with Firecrawl deliberately pointed at a dead port:
+`fetch.py https://www.g2.com/products/ffmpeg/reviews --deadline 30` returned
+`vendor:exa`, 13,746 chars in 16 s — the direct stage 403s, the reader hangs, and
+the page still came back.
+
+**Exa's `maxCharacters` gotcha:** left unset, `web_fetch_exa` returns ~3,000
+characters and looks terminally truncated. This skill asks for 50,000, which
+returned 31,442 on a long Wikipedia article. If you ever see `vendor:exa` results
+that stop mid-sentence around 3k, something unset the parameter.
 
 PDF text: `pdftotext` → `pypdf` → reader proxy. If none of the three can read it,
 you get a clear error naming the missing dependency, not a silent empty file.
@@ -51,7 +71,7 @@ you get a clear error naming the missing dependency, not a silent empty file.
   chars, fetched_at) plus a `## Links` section when `--links` is set
 
 `source` tells you which stage won — `direct`, `reader:jina`, `reader:allorigins`,
-`reader:cors.lol`, or `wayback`. That matters: a Wayback result is a *snapshot*,
+`reader:cors.lol`, `vendor:firecrawl`, `vendor:exa`, or `wayback`. That matters: a Wayback result is a *snapshot*,
 so check `snapshot_ts` before quoting it as current.
 
 **Why two kinds of relay:** on 2026-11-01 `r.jina.ai` began answering
@@ -135,7 +155,7 @@ with no SLA and the direct path costs the vendor nothing. Disable it with
 `--deadline` (default 45 s) is a hard wall-clock cap per URL, enforced from
 *outside* each stage: a stage that ignores its own socket timeouts is abandoned
 in a daemon thread and the next stage gets its turn. Each stage also receives a
-share of the deadline (direct 35%, reader 40%, vendor 50%, archive 30%), so a
+share of the deadline (direct 35%, reader 40%, vendor 50%, exa 45%, archive 30%), so a
 hanging relay cannot starve the stage behind it.
 
 Before this existed, `fetch.py https://www.g2.com/…` never returned. It now
