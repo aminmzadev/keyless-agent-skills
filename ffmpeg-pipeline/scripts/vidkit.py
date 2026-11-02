@@ -46,8 +46,16 @@ def need(binary):
                          + (" (apt install ffmpeg)" if binary.startswith("ffmpeg") else ""))
 
 
-def run(cmd, ok_codes=(0,)):
-    r = subprocess.run(cmd, capture_output=True, text=True)
+# Every ffmpeg call gets a wall clock. An agent has no terminal to notice a
+# hung encoder, and a still-image zoompan on a 12k photo can run for hours.
+TIMEOUT = int(os.environ.get("VIDKIT_FFMPEG_TIMEOUT") or 900)
+
+
+def run(cmd, ok_codes=(0,), timeout=TIMEOUT):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{cmd[0]} gave up after {timeout}s")
     if r.returncode not in ok_codes:
         tail = (r.stderr or r.stdout or "").strip().splitlines()
         raise RuntimeError(f"{cmd[0]} failed: {tail[-1][:300] if tail else 'unknown'}")
@@ -55,12 +63,24 @@ def run(cmd, ok_codes=(0,)):
 
 
 def duration(path):
+    """Real seconds, or a hard error.
+
+    This used to return 0.0 on anything ffprobe could not parse. Every caller
+    then compared that 0 against the other track's length and took the "audio is
+    shorter" branch, so a corrupt mp3 was silently replaced by silence and the
+    command exited 0 with a video that had no sound in it. A number nobody can
+    measure is not a default, it is a failure.
+    """
+    need("ffprobe")
     r = run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "csv=p=0", path])
     try:
-        return float(r.stdout.strip())
+        secs = float((r.stdout or "").strip())
     except ValueError:
-        return 0.0
+        secs = 0.0
+    if not secs > 0:
+        raise RuntimeError(f"ffprobe reports no duration for {path} — is it a real media file?")
+    return secs
 
 
 def human(n):
@@ -165,7 +185,8 @@ def cmd_video(a):
         # ---- audio bed
         narr = a.narration
         if narr and os.path.exists(narr) and os.path.getsize(narr) < 4096:
-            narr = open(narr, encoding="utf-8").read().strip()   # short file = text
+            with open(narr, encoding="utf-8") as fh:            # short file = text
+                narr = fh.read().strip()
         voice_file = a.audio
         if narr and not voice_file:
             tts = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),

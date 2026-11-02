@@ -1,7 +1,7 @@
 ---
 name: fetch-page
 description: Turn any URL into clean markdown for an agent, with a five-stage fallback plus machine-readable rewrites (direct → two independent kinds of relay → two vendor readers that render JS and get past bot walls → Wayback Machine), and a PDF extractor that needs no dependency, a hard wall-clock deadline, PDF support and a 24-hour cache. Use whenever you have a URL and need its readable content — documentation, articles, changelogs, terms pages, papers, or a page a plain request cannot get through.
-version: 1.6.0
+version: 1.7.0
 license: MIT
 ---
 
@@ -198,6 +198,9 @@ after the first pass.
   got a stub, not an article.
 - `--max-chars` defaults to 20000, which is roughly a long article. Raise it for
   documentation pages, lower it when you only need the top of a page.
+- `chars` is what you got, `full_chars` is what the page holds. They differ when
+  `--max-chars` cut the text; re-run with a bigger cap to read the rest. The cache
+  stores the whole page, so asking for more is a cache hit, not a refetch.
 - Respect the hosts you hit: 4 parallel fetches is the default and is plenty.
 
 ## The four stages

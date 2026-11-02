@@ -75,6 +75,12 @@ def frontmatter(text):
     return out
 
 
+def _slurp(path):
+    """Read a small text file without leaking the handle."""
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
 def dir_skills(root):
     """Fallback: derive the catalogue from SKILL.md frontmatter alone."""
     skills = []
@@ -82,7 +88,7 @@ def dir_skills(root):
         p = os.path.join(root, name, "SKILL.md")
         if not os.path.isfile(p):
             continue
-        fm = frontmatter(open(p, encoding="utf-8").read())
+        fm = frontmatter(_slurp(p))
         scripts = os.path.join(root, name, "scripts")
         entry = None
         if os.path.isdir(scripts):
@@ -103,7 +109,8 @@ def catalogue(root):
     man = os.path.join(root, "MANIFEST.json")
     if os.path.isfile(man):
         try:
-            d = json.load(open(man, encoding="utf-8"))
+            with open(man, encoding="utf-8") as f:
+                d = json.load(f)
             skills = []
             for s in d.get("skills", []):
                 s = dict(s)
@@ -111,7 +118,7 @@ def catalogue(root):
                 if not s.get("description"):
                     p = os.path.join(root, s["path"], "SKILL.md")
                     if os.path.isfile(p):
-                        s["description"] = frontmatter(open(p, encoding="utf-8").read()).get(
+                        s["description"] = frontmatter(_slurp(p)).get(
                             "description", "")
                 skills.append(s)
             if skills:

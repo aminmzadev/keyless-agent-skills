@@ -51,13 +51,31 @@ _COOKIES = cookiejar.CookieJar()
 _OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_COOKIES))
 
 
+# A search response is JSON or HTML, never a download. Capping the read keeps a
+# hostile or broken endpoint from turning one query into an out-of-memory kill,
+# and it is the single place every provider's body passes through.
+MAX_BODY = 4 * 1024 * 1024
+
+
+class BodyTooLarge(RuntimeError):
+    """The response was bigger than we are willing to hold in memory."""
+
+
+def _decode_capped(resp, cap=None, what="response"):
+    cap = MAX_BODY if cap is None else cap
+    raw = resp.read(cap + 1)
+    if len(raw) > cap:
+        raise BodyTooLarge(f"{what} over {cap // 1048576} MB, refused")
+    return raw.decode("utf-8", "replace")
+
+
 def http(url, headers=None, timeout=TIMEOUT):
     h = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9"}
     if headers:
         h.update(headers)
     req = urllib.request.Request(url, headers=h)
     with _OPENER.open(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
+        return _decode_capped(r, what="search body")
 
 
 def with_retries(fn, what, retries=RETRIES):
@@ -655,7 +673,7 @@ def _post_json(url, payload, headers=None, timeout=25):
         h.update(headers)
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=h, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+        return json.loads(_decode_capped(r, what="vendor body"))
 
 
 def p_keenable(q, n):
@@ -723,7 +741,7 @@ def p_exa(q, n):
     req = urllib.request.Request(_endpoint(EXA_MCP_URL, "EXA_MCP_URL"),
                                  data=json.dumps(payload).encode(), headers=h, method="POST")
     with urllib.request.urlopen(req, timeout=25) as r:
-        raw = r.read().decode("utf-8", "replace")
+        raw = _decode_capped(r, what="exa body")
     text = ""
     for line in raw.splitlines():
         line = line.strip()
@@ -853,6 +871,32 @@ CACHE_ROOT = os.environ.get("AGENT_SKILLS_CACHE") or os.path.expanduser(
     "~/.cache/agent-skills")
 CACHE_DIR = os.path.join(CACHE_ROOT, "search")
 CACHE_TTL = 3600
+CACHE_SCHEMA = 2        # bump when the payload shape changes; old entries are ignored
+
+try:                    # the shared cache layer, vendored next to us
+    from _cachekit import atomic_write_json as _atomic_write_json
+    from _cachekit import read_json as _read_json
+except ImportError:     # a lone copy of search.py: same behaviour
+    def _atomic_write_json(path, obj, **kw):        # noqa: D103 - see _cachekit
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = f"{path}.tmp-{os.getpid()}"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(obj, f, **kw)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _read_json(path, default=None):             # noqa: D103 - see _cachekit
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return default
 
 
 def _cache_path(key):
@@ -861,22 +905,20 @@ def _cache_path(key):
 
 
 def _cache_get(key):
-    p = _cache_path(key)
-    try:
-        d = json.load(open(p))
-        if time.time() - d.get("_ts", 0) <= CACHE_TTL:
-            return d.get("payload")
-    except Exception:
-        pass
+    d = _read_json(_cache_path(key))
+    if not isinstance(d, dict) or d.get("schema") != CACHE_SCHEMA:
+        return None
+    if time.time() - d.get("_ts", 0) <= CACHE_TTL:
+        return d.get("payload")
     return None
 
 
 def _cache_put(key, payload):
     try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        json.dump({"_ts": time.time(), "payload": payload}, open(_cache_path(key), "w"))
-    except Exception:
-        pass
+        _atomic_write_json(_cache_path(key), {"_ts": time.time(), "schema": CACHE_SCHEMA,
+                                              "payload": payload})
+    except OSError:
+        pass        # a cache we cannot write must never fail the search
 
 
 # -------------------------------------------------------------------------- main

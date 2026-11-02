@@ -52,6 +52,41 @@ UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
 CACHE_ROOT = os.environ.get("AGENT_SKILLS_CACHE") or os.path.expanduser(
     "~/.cache/agent-skills")
 CACHE = os.path.join(CACHE_ROOT, "fetch")
+# Bumped whenever the stored entry shape changes: an entry written by an older
+# version is ignored instead of being misread (1.7.0 stopped storing the caller's
+# truncated text, so 1.x entries must not be served).
+CACHE_SCHEMA = 2
+# A page body is capped before it is decoded or parsed. Without a cap one hostile
+# URL is enough to exhaust the agent's memory: a 200 MB PDF, or a 1 MB gzip that
+# inflates to 10 GB, costs nothing to serve.
+MAX_BODY = 8 * 1024 * 1024              # bytes on the wire
+MAX_INFLATED = 24 * 1024 * 1024         # bytes after gunzip
+MAX_PDF = 48 * 1024 * 1024              # PDFs are legitimately large
+
+try:                                    # the shared cache layer, vendored next to us
+    from _cachekit import atomic_write_json as _atomic_write_json
+    from _cachekit import read_json as _read_json
+except ImportError:                     # a lone copy of fetch.py: same behaviour
+    def _atomic_write_json(path, obj, **kw):        # noqa: D103 - see _cachekit
+        tmp = f"{path}.tmp-{os.getpid()}-{threading.get_ident()}"
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(obj, f, **kw)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _read_json(path, default=None):             # noqa: D103 - see _cachekit
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return default
 JINA = "https://r.jina.ai/"
 # Free CORS relays: the page is fetched from *their* IP, so datacenter blocks and
 # "enable JavaScript" walls often still serve us the HTML. Volunteers — flaky.
@@ -193,19 +228,52 @@ def html_to_markdown(html, keep_links=False, base=None):
 
 
 # ------------------------------------------------------------------ transports
-def _open(url, timeout, headers=None):
+class BodyTooLarge(RuntimeError):
+    """The response was bigger than we are willing to hold in memory."""
+
+
+def _read_capped(resp, cap, what="body"):
+    """Read at most *cap* bytes and refuse anything longer.
+
+    read(cap + 1) asks the socket for one byte too many, which is how we tell
+    "exactly cap" from "truncated to cap" without trusting Content-Length.
+    """
+    data = resp.read(cap + 1)
+    if len(data) > cap:
+        raise BodyTooLarge(f"{what} over {cap // 1048576} MB, refused")
+    return data
+
+
+def _gunzip_capped(raw, cap=None):
+    """gunzip with a ceiling: a 1 MB bomb must not become 10 GB of text."""
+    cap = MAX_INFLATED if cap is None else cap
+    out = bytearray()
+    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as gz:
+        while True:
+            chunk = gz.read(1 << 16)
+            if not chunk:
+                return bytes(out)
+            out += chunk
+            if len(out) > cap:
+                raise BodyTooLarge(f"gunzipped body over {cap // 1048576} MB, refused")
+
+
+def _open(url, timeout, headers=None, max_bytes=None):
+    max_bytes = MAX_BODY if max_bytes is None else max_bytes
     h = {"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,application/pdf,*/*",
          "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, identity"}
     if headers:
         h.update(headers)
     req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read()
+        raw = _read_capped(r, max_bytes, f"body from {urllib.parse.urlsplit(r.geturl()).netloc}")
         if (r.headers.get("Content-Encoding") or "").lower() == "gzip" or raw[:2] == b"\x1f\x8b":
             try:
-                raw = gzip.decompress(raw)
-            except Exception:
-                pass
+                raw = _gunzip_capped(raw)
+            except BodyTooLarge:
+                raise
+            except (OSError, EOFError, zlib.error):
+                pass        # not gzip after all: keep the bytes we got
         return r.status, raw, dict(r.headers), r.geturl()
 
 
@@ -439,7 +507,7 @@ def pdf_to_text(raw):
 
 def fetch_direct(url, timeout, keep_links):
     t0 = time.time()
-    status, raw, hdrs, final = _open(url, timeout)
+    status, raw, hdrs, final = _open(url, timeout, max_bytes=MAX_PDF)
     ctype = (hdrs.get("Content-Type") or "").lower()
     if "pdf" in ctype or url.lower().endswith(".pdf") or raw[:4] == b"%PDF":
         txt = pdf_to_text(raw)
@@ -1150,11 +1218,60 @@ def fetch_x(url, timeout, keep_links=False):
             "status": 200, "elapsed": round(time.time() - t0, 2), "media": media}
 
 
+_MAGIC = ((b"\xff\xd8\xff", "jpeg"), (b"\x89PNG", "png"), (b"GIF8", "gif"),
+          (b"\x1aE\xdf\xa3", "webm"), (b"%PDF", "pdf"))
+
+
+def media_kind(head, ctype=""):
+    """What this body actually is, by magic bytes first and Content-Type second."""
+    for sig, kind in _MAGIC:
+        if head.startswith(sig):
+            return kind
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    if head[4:8] == b"ftyp":
+        return "mp4" if b"avi" not in head[8:12] else "avif"
+    ctype = (ctype or "").split(";")[0].strip().lower()
+    for pre, kind in (("image/", ctype[6:]), ("video/", ctype[6:])):
+        if ctype.startswith(pre):
+            return kind.split("+")[0] or "bin"
+    if ctype == "application/octet-stream":
+        return "bin"
+    return ""
+
+
+def next_media_index(outdir):
+    """First free NNN- slot in *outdir*, so two calls cannot write the same file."""
+    best = 0
+    try:
+        names = os.listdir(outdir)
+    except OSError:
+        return 1
+    for name in names:
+        head = name.split("-", 1)[0]
+        if head.isdigit():
+            best = max(best, int(head))
+    return best + 1
+
+
+def _media_name(n, url_path, ext):
+    base = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(url_path)[:40] or "media")
+    name = f"{n:02d}-{base}"
+    if not name.lower().endswith(ext):
+        name += ext
+    return name
+
+
 def download_media(items, outdir, timeout=30, limit=25, max_bytes=40 * 1024 * 1024):
-    """Save photos and videos next to the markdown. Returns the paths written."""
-    import mimetypes
+    """Save photos and videos next to the markdown. Returns the paths written.
+
+    A CDN answering 200 with an HTML error page used to be written out as
+    `03-media.mp4`: valid-looking file, no video, and it counted against the
+    cap. Now the bytes have to look like media before they are kept.
+    """
     os.makedirs(outdir, exist_ok=True)
     written = []
+    n = next_media_index(outdir)
     for it in (items or []):
         if len(written) >= limit:
             break
@@ -1165,17 +1282,22 @@ def download_media(items, outdir, timeout=30, limit=25, max_bytes=40 * 1024 * 10
         ext = os.path.splitext(path)[1].lower()
         if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".mp4", ".webm"):
             ext = ".mp4" if it.get("type") == "video" else ".jpg"
-        name = f"{len(written) + 1:02d}-{os.path.basename(path)[:40] or 'media'}"
-        name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
-        if not name.lower().endswith(ext):
-            name += ext
-        dest = os.path.join(outdir, name)
+        # `fetch.py a b c --media DIR` must not restart at 01- for every URL and
+        # quietly overwrite the previous page's pictures
+        dest = os.path.join(outdir, _media_name(n, path, ext))
+        while os.path.exists(dest):
+            n += 1
+            dest = os.path.join(outdir, _media_name(n, path, ext))
+        n += 1
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
+                ctype = r.headers.get("Content-Type") or ""
                 data = r.read(max_bytes + 1)
             if len(data) > max_bytes:
                 continue
+            if not media_kind(data[:16], ctype):
+                continue            # an HTML error page is not a picture
             with open(dest, "wb") as fh:
                 fh.write(data)
             written.append(dest)
@@ -1225,30 +1347,45 @@ def cache_path(url):
 
 
 def cache_get(url, ttl):
-    p = cache_path(url)
-    if not (ttl and os.path.exists(p)):
+    """Return the stored entry for *url* as stored: full text, caller-shaped later."""
+    if not ttl:
         return None
-    try:
-        with open(p) as fh:
-            d = json.load(fh)
-        if time.time() - d.get("_ts", 0) <= ttl:
-            d["cached"] = True
-            d["source"] = d.get("source", "cache")
-            return d
-    except Exception:
-        pass
+    d = _read_json(cache_path(url))
+    if not isinstance(d, dict) or d.get("_schema") != CACHE_SCHEMA:
+        return None
+    if time.time() - d.get("_ts", 0) <= ttl:
+        d["cached"] = True
+        d["source"] = d.get("source", "cache")
+        return d
     return None
 
 
 def cache_put(url, data):
-    os.makedirs(CACHE, exist_ok=True)
+    """Store *data* verbatim. Never store a caller's view of it: see _shape()."""
     d = dict(data)
     d["_ts"] = time.time()
+    d["_schema"] = CACHE_SCHEMA
     try:
-        with open(cache_path(url), "w") as fh:      # a leak here fails the -W error runs
-            json.dump(d, fh)
-    except Exception:
-        pass
+        _atomic_write_json(cache_path(url), d)
+    except OSError:
+        pass        # a cache we cannot write must never fail the fetch
+
+
+def _shape(res, max_chars):
+    """Turn a fetched/cached result into what the caller asked for.
+
+    The cache keeps the *whole* text; the cap belongs to the caller, not to the
+    file. Truncating before storing meant a later call with a larger --max-chars
+    silently received the smaller earlier slice, and reported it as the page's
+    length. `full_chars` lets a caller notice that it is looking at a slice.
+    """
+    out = dict(res)
+    full = res.get("text") or ""
+    out["text"] = full[:max_chars]
+    out["chars"] = len(out["text"])
+    out["full_chars"] = len(full)
+    out.setdefault("media", [])
+    return out
 
 
 # -------------------------------------------------------------------- the thing
@@ -1261,11 +1398,7 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
     if hit and keep_links and not hit.get("_links_collected"):
         hit = None
     if hit:
-        hit["text"] = (hit.get("text") or "")[:max_chars]
-        hit["chars"] = len(hit["text"])       # a cached page must still honour max_chars
-        hit.setdefault("media", [])
-        hit["cached"] = True
-        return hit
+        return _shape(hit, max_chars)        # cap applied on the way out, never stored
 
     hard_end = time.monotonic() + max(1.0, float(deadline))
     deadline_exceeded = False
@@ -1309,8 +1442,7 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
                 wall = wall_reason(res["text"])
                 if wall:
                     raise RuntimeError(f"wall page, not content ({wall})")
-                res["text"] = res["text"][:max_chars]
-                res["chars"] = len(res["text"])
+                res["text"] = res["text"][:MAX_INFLATED]   # a storage ceiling, not the caller's cap
                 res["ok"] = True
                 res["url"] = url
                 res["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -1322,8 +1454,8 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
                 res["stages_cut"] = list(stages_cut)
                 if keep_links:
                     res["_links_collected"] = True
-                cache_put(url, res)
-                return res
+                cache_put(url, res)          # full text: what the next caller may want
+                return _shape(res, max_chars)
             except urllib.error.HTTPError as e:
                 errors.append(f"{name}: HTTP {e.code}")
                 # a vendor that answered with an error has answered: retrying a
@@ -1344,6 +1476,7 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
             time.sleep(min(0.8 * (attempt + 1), max(0.0, hard_end - time.monotonic())))
 
     return {"ok": False, "url": url, "title": "", "text": "", "chars": 0,
+            "full_chars": 0,                      # same keys on failure as on success
             "source": None, "errors": errors, "links": [], "media": [],
             "deadline_exceeded": deadline_exceeded, "stages_cut": list(stages_cut)}
 
@@ -1391,13 +1524,13 @@ def main():
     a = ap.parse_args()
 
     ttl = 0 if a.no_cache else a.ttl
-    results = []
     with ThreadPoolExecutor(max_workers=a.parallel) as ex:
-        futs = {ex.submit(fetch, u, a.timeout, a.max_chars, a.links, ttl,
-                          not a.no_reader, not a.no_archive, 1, a.deadline,
-                          not a.no_vendor, not a.no_rewrite): u for u in a.urls}
-        for f in as_completed(futs):
-            results.append(f.result())
+        futs = {u: ex.submit(fetch, u, a.timeout, a.max_chars, a.links, ttl,
+                             not a.no_reader, not a.no_archive, 1, a.deadline,
+                             not a.no_vendor, not a.no_rewrite) for u in a.urls}
+        # collect in the order the URLs were given: a caller that runs
+        # `fetch.py a b c --json` should not have to match results by URL
+        results = [futs[u].result() for u in a.urls]
 
     if a.out:
         os.makedirs(a.out, exist_ok=True)

@@ -1,7 +1,7 @@
 ---
 name: ffmpeg-pipeline
 description: Turn stills into video and do media surgery from the shell — Ken Burns motion, crossfades, narration muxing, contact sheets, frame extraction, GIFs, loudness normalisation and speed changes. Use when the user wants a video, a slideshow, a preview clip, a contact sheet of a video, or needs audio and video combined, trimmed or normalised.
-version: 1.2.0
+version: 1.2.1
 license: MIT
 ---
 
@@ -78,6 +78,8 @@ silence so you never lose the ending. Both cases are handled — do not add
 | Symptom | Cause | Fix |
 |---|---|---|
 | `missing dependency: ffmpeg` | not installed | `apt install ffmpeg` (or `brew install ffmpeg`) |
+| `ffprobe reports no duration for …` | corrupt/truncated media, or audio that is not audio | re-download the source. It used to silently become a silent video; it is an error now |
+| `ffmpeg gave up after 900s` | absurd resolution, or an encoder waiting on a missing device | raise `VIDKIT_FFMPEG_TIMEOUT` seconds if the box is just slow |
 | `ffmpeg failed: … Invalid argument` on zoompan | odd source dimensions | the filter already scales to `W*2`; if you edited it, keep even numbers |
 | output is silent | narration file missing/empty | check the path; `--narration` accepts either text or an audio path |
 | output much shorter than expected | audio shorter than video and something added `-shortest` | remove it; `vidkit.py` pads instead |

@@ -68,6 +68,7 @@ class _Site:
         self.exa_raw: str | None = None
         self.exa_headers: dict = {}
         self.json_routes: dict = {}
+        self.raw_routes: dict = {}    # prefix -> (status, content_type, body, extra_headers)
         self.page_html = "<html><head><title>t</title></head><body><p>hi</p></body></html>"
         self.site = self
 
@@ -79,7 +80,7 @@ class _Site:
 
             def do_GET(self):
                 outer.requests.append(self.path)
-                if self.path.startswith("/media/"):
+                if self.path.startswith("/media/") and not outer.raw_routes:
                     body = b"\xff\xd8\xff\xe0" + b"JPEGDATA" * 50 + b"\xff\xd9"
                     self.send_response(200)
                     self.send_header("Content-Type", "image/jpeg")
@@ -87,6 +88,18 @@ class _Site:
                     self.end_headers()
                     self.wfile.write(body)
                     return
+                for prefix, spec in outer.raw_routes.items():
+                    if self.path.startswith(prefix):
+                        status, ctype, body = spec[:3]
+                        extra = spec[3] if len(spec) > 3 else {}
+                        self.send_response(status)
+                        self.send_header("Content-Type", ctype)
+                        self.send_header("Content-Length", str(len(body)))
+                        for k, v in (extra or {}).items():
+                            self.send_header(k, v)
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
                 if outer.json_routes:
                     for prefix, payload in outer.json_routes.items():
                         if self.path.startswith(prefix):
@@ -1078,12 +1091,174 @@ class MediaDownloadTests(unittest.TestCase):
             for f in files:
                 self.assertTrue(os.path.getsize(f) > 100)
 
+    def test_a_second_call_does_not_overwrite_the_first_pages_media(self):
+        """`fetch.py a b --media DIR` used to write both pages into 01-…."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            first = fetch_mod.download_media(
+                [{"url": f"{self.site.base}/media/A.jpg", "type": "image"},
+                 {"url": f"{self.site.base}/media/B.jpg", "type": "image"}], d)
+            second = fetch_mod.download_media(
+                [{"url": f"{self.site.base}/media/C.jpg", "type": "image"}], d)
+            self.assertEqual(len(first), 2)
+            self.assertEqual(len(second), 1)
+            self.assertEqual(len(set(first + second)), 3, "no file may be reused")
+            self.assertTrue(os.path.basename(second[0]).startswith("03"))
+            self.assertEqual(len(os.listdir(d)), 3)
+
     def test_limit_and_bad_urls_are_respected(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             items = [{"url": "not-a-url"}] + [{"url": f"{self.site.base}/media/A.jpg"}] * 3
             files = fetch_mod.download_media(items, d, limit=2)
             self.assertEqual(len(files), 2)
+
+
+class CacheIntegrityTests(unittest.TestCase):
+    """The cache stores results; the caller's --max-chars must not be stored with them."""
+
+    def setUp(self):
+        import tempfile
+        self.site = _Site()
+        self.site.page_html = ("<html><head><title>long</title></head><body><p>"
+                               + ("alpha beta gamma delta " * 200) + "</p></body></html>")
+        self.tmp = tempfile.mkdtemp(prefix="fetchcache-")
+        self._old_cache = fetch_mod.CACHE
+        fetch_mod.CACHE = self.tmp
+
+    def tearDown(self):
+        import shutil
+        fetch_mod.CACHE = self._old_cache
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        self.site.close()
+
+    def _fetch(self, **kw):
+        return fetch_mod.fetch(f"{self.site.base}/page", timeout=10, deadline=15,
+                               use_reader=False, use_archive=False, use_vendor=False,
+                               retries=0, **kw)
+
+    def test_a_capped_fetch_does_not_shrink_the_cached_page(self):
+        """A small --max-chars used to poison the entry for every later caller."""
+        small = self._fetch(ttl=600, max_chars=300)
+        self.assertEqual(small["chars"], 300)
+        self.assertGreater(small["full_chars"], 300, "caller must be told it got a slice")
+
+        big = self._fetch(ttl=600, max_chars=5000)
+        self.assertTrue(big.get("cached"), "second call should hit the cache")
+        self.assertEqual(
+            small["full_chars"], big["chars"],
+            "a later call must see the whole cached text, not the earlier slice")
+
+    def test_the_cached_entry_keeps_the_full_text(self):
+        self._fetch(ttl=600, max_chars=100)
+        entry = json.loads(open(fetch_mod.cache_path(f"{self.site.base}/page")).read())
+        self.assertGreater(len(entry["text"]), 1000)
+        self.assertEqual(entry["_schema"], fetch_mod.CACHE_SCHEMA)
+
+    def test_an_entry_from_an_older_schema_is_ignored(self):
+        """1.x entries hold truncated text; serving them would re-introduce the bug."""
+        url = f"{self.site.base}/page"
+        os.makedirs(fetch_mod.CACHE, exist_ok=True)
+        legacy = {"url": url, "ok": True, "text": "truncated", "source": "direct", "_ts": time.time()}
+        with open(fetch_mod.cache_path(url), "w") as f:
+            json.dump(legacy, f)
+        res = self._fetch(ttl=600, max_chars=5000)
+        self.assertNotEqual(res["text"], "truncated", "a legacy entry must not be served")
+        self.assertGreater(res["chars"], 1000)
+
+    def test_a_write_that_dies_midway_leaves_the_old_entry_and_no_debris(self):
+        """The torn-file case: rename is atomic, so the previous entry survives."""
+        url = f"{self.site.base}/page"
+        self._fetch(ttl=600)
+        path = fetch_mod.cache_path(url)
+        with open(path) as f:
+            before = f.read()
+
+        real_dump = json.dump
+
+        def dying_dump(obj, fp, **kw):
+            fp.write('{"half": ')       # a plausible half-written entry
+            raise OSError("disk full")
+
+        json.dump = dying_dump
+        try:
+            fetch_mod.cache_put(url, {"text": "new text", "ok": True})   # must not raise
+        finally:
+            json.dump = real_dump
+
+        with open(path) as f:
+            self.assertEqual(f.read(), before, "a failed write must not damage the old entry")
+        self.assertEqual([n for n in os.listdir(fetch_mod.CACHE) if n.startswith(".tmp-")], [],
+                         "a failed write must not leave a temp file behind")
+        json.loads(before)              # and the survivor is still valid JSON
+
+
+class BodyLimitTests(unittest.TestCase):
+    """One hostile URL must not be able to exhaust the agent's memory."""
+
+    def setUp(self):
+        self.site = _Site()
+        self._caps = (fetch_mod.MAX_BODY, fetch_mod.MAX_PDF, fetch_mod.MAX_INFLATED)
+
+    def tearDown(self):
+        fetch_mod.MAX_BODY, fetch_mod.MAX_PDF, fetch_mod.MAX_INFLATED = self._caps
+        self.site.close()
+
+    def _fetch(self, path):
+        return fetch_mod.fetch(f"{self.site.base}{path}", timeout=10, deadline=15, ttl=0,
+                               use_reader=False, use_archive=False, use_vendor=False,
+                               retries=0)
+
+    def test_an_oversized_body_is_refused(self):
+        fetch_mod.MAX_BODY = fetch_mod.MAX_PDF = 4096
+        self.site.raw_routes["/huge"] = (200, "text/html", b"<p>" + b"x" * 200000 + b"</p>")
+        res = self._fetch("/huge")
+        self.assertFalse(res["ok"], res)
+        self.assertTrue(any("refused" in e for e in res["errors"]), res["errors"])
+
+    def test_a_gzip_bomb_is_refused(self):
+        fetch_mod.MAX_INFLATED = 8192
+        bomb = zlib.compressobj(9, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
+        body = b"".join(bomb.compress(b"a" * 65536) for _ in range(64)) + bomb.flush()
+        self.site.raw_routes["/bomb"] = (200, "text/html", body, {"Content-Encoding": "gzip"})
+        self.assertGreater(len(body), 0)
+        res = self._fetch("/bomb")
+        self.assertFalse(res["ok"], res)
+        self.assertTrue(any("gunzipped" in e for e in res["errors"]), res["errors"])
+
+    def test_a_body_under_the_cap_still_works(self):
+        fetch_mod.MAX_BODY = fetch_mod.MAX_PDF = 65536
+        self.site.page_html = "<html><body><p>" + ("fine page text " * 20) + "</p></body></html>"
+        res = self._fetch("/page")
+        self.assertTrue(res["ok"], res)
+
+
+class MediaSniffTests(unittest.TestCase):
+    """An error page is not a picture, however the CDN labelled it."""
+
+    def setUp(self):
+        self.site = _Site()
+
+    def tearDown(self):
+        self.site.close()
+
+    def test_media_kind_goes_by_bytes_first(self):
+        self.assertEqual(fetch_mod.media_kind(b"\xff\xd8\xff\xe0", "text/html"), "jpeg")
+        self.assertEqual(fetch_mod.media_kind(b"\x89PNG\r\n", ""), "png")
+        self.assertEqual(fetch_mod.media_kind(b"RIFF\x00\x00\x00\x00WEBPVP8 ", ""), "webp")
+        self.assertEqual(fetch_mod.media_kind(b"\x00\x00\x00\x18ftypisom", ""), "mp4")
+        self.assertEqual(fetch_mod.media_kind(b"", "image/png"), "png")
+        self.assertEqual(fetch_mod.media_kind(b"<html>nope", "text/html"), "")
+
+    def test_an_html_error_page_is_not_saved_as_media(self):
+        import tempfile
+        self.site.raw_routes["/media/blocked.mp4"] = (
+            200, "text/html", b"<html><body>rate limited</body></html>")
+        with tempfile.TemporaryDirectory() as d:
+            files = fetch_mod.download_media(
+                [{"url": f"{self.site.base}/media/blocked.mp4", "type": "video"}], d)
+            self.assertEqual(files, [], "an HTML body must not be written as a video")
+            self.assertEqual(os.listdir(d), [])
 
 
 class UnitTests(unittest.TestCase):

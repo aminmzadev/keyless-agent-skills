@@ -144,9 +144,14 @@ def run(question, depth=2, max_sources=8, group="web", providers=None,
                 errors[futs[f]] = str(e)[:120]
 
     merged = S.trim(S.rank(S.dedupe(hits), question), max_sources * 2, per_domain=2)
+    # the report describes its own method, so the method has to be recorded, not
+    # remembered: this used to be a hardcoded "(Bing, Bing News, Wikipedia)" line
+    # that was wrong for --group tech/academic/all and for every --provider run
+    used = list(providers or S.GROUPS.get(group, S.GROUPS["web"]))
     if not do_fetch:
         return {"question": question, "queries": queries, "sources": [], "candidates": merged,
-                "errors": errors, "summaries": {}, "numbers": []}
+                "errors": errors, "summaries": {}, "numbers": [],
+                "group": group, "providers": used}
 
     docs, failures = [], []
     want_links = follow > 0
@@ -183,6 +188,7 @@ def run(question, depth=2, max_sources=8, group="web", providers=None,
     return {"question": question, "queries": queries, "sources": docs,
             "failures": failures, "errors": errors, "summaries": sums,
             "numbers": numbers(docs), "candidates": merged,
+            "group": group, "providers": used,
             "followed": [{"url": d["url"], "from": d.get("via_link_from"),
                           "anchor": d.get("anchor"), "chars": d.get("chars")}
                          for d in followed],
@@ -366,13 +372,16 @@ def to_markdown(res):
         L.append("")
 
     L.append("## Method\n")
+    grp = res.get("group") or "web"
+    prov = res.get("providers") or S.GROUPS.get(grp) or S.GROUPS["web"]
     L.append("1. Question expanded into "
-             f"{len(res['queries'])} queries; each searched across the `web` provider group "
-             "(Bing, Bing News, Wikipedia) in parallel.")
+             f"{len(res['queries'])} queries; each searched across the `{grp}` provider group "
+             f"({', '.join(prov)}) in parallel.")
     L.append("2. Results merged, deduped by URL, ranked by relevance + cross-provider "
              "agreement + domain diversity (max 2 per domain).")
-    L.append("3. Top pages fetched with a three-stage fallback (direct → reader proxy → "
-             "Wayback), HTML reduced to main content, boilerplate dropped.")
+    L.append("3. Top pages fetched through the staged chain (direct → alternate front-ends "
+             "→ reader proxies → vendor → Wayback, each under a shared deadline); HTML "
+             "reduced to main content, boilerplate dropped.")
     L.append("4. Sentences scored by idf-weighted overlap with the question, "
              "de-duplicated at 70% similarity; numbers extracted by regex.")
     if res.get("followed"):
@@ -408,6 +417,10 @@ def main():
     res = run(question, a.depth, a.max_sources, a.group, a.provider,
               not a.no_fetch, a.per_doc, follow=a.follow, follow_budget=a.follow_budget)
     res["_json_path"] = os.path.splitext(out)[0] + ".json"
+
+    # -o reports/run.md should create reports/, not die with a traceback after
+    # the whole search and fetch has already been paid for
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
 
     with open(os.path.splitext(out)[0] + ".json", "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in res.items() if k != "summaries"} | {

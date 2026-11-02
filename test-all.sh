@@ -42,6 +42,9 @@ echo "== hermetic unit suites (no network) =="
 run "fetch deadline + vendor"  python3 "$here/fetch-page/tests/test_fetch.py" -q
 run "search vendor tier"       python3 "$here/web-search/tests/test_vendors.py" -q
 run "search yahoo + cookie jar" python3 "$here/web-search/tests/test_providers.py" -q
+run "cache integrity + body caps" python3 "$here/web-search/tests/test_cache.py" -q
+run "ffmpeg wrappers (no encoder)"  python3 "$here/ffmpeg-pipeline/tests/test_vidkit.py" -q
+run "report tells the truth"      python3 "$here/deep-research/tests/test_report.py" -q
 if command -v npm >/dev/null; then
   run "publishable tree builds" bash -c "bash '$here/packaging/build.sh' --owner ci --name keyless-agent-skills >/dev/null && cd '$here/packaging/dist-repo' && npm pack --dry-run 2>&1 | grep -q 'total files'"
 else sk "publishable tree (npm not installed)"; fi

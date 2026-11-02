@@ -36,10 +36,12 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 
 DEFAULT_ROOT = os.path.expanduser("~/.cache/agent-skills")
 PROTECTED = {"piper"}                      # model files, never auto-pruned
+TMP_PREFIX = ".tmp-"                       # half-written entries: never read, always GC'd
 TTL_HINT = {"search": 3600, "fetch": 86400}
 
 
@@ -84,6 +86,47 @@ def _entry_ts(path):
         return 0.0
 
 
+# -------------------------------------------------------------- safe primitives
+# Every cache writer in the pack goes through these two functions. Writing
+# straight to the final path means a reader can open a file that is still being
+# written and get half a JSON document; a crash mid-write leaves that truncated
+# entry behind to be re-read until its TTL runs out. Write to a sibling temp file
+# and os.replace() it: rename is atomic on POSIX, so a reader sees either the old
+# entry or the new one, never a torn one.
+def tmp_name(path):
+    return os.path.join(os.path.dirname(path) or ".",
+                        f"{TMP_PREFIX}{os.getpid()}-{threading.get_ident()}-"
+                        f"{os.path.basename(path)}")
+
+
+def atomic_write_json(path, obj, **dump_kw):
+    """Write *obj* as JSON at *path* so no reader can ever see a partial file."""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = tmp_name(path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, **dump_kw)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def read_json(path, default=None):
+    """json.load() that never raises and never leaks the handle."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
 # ------------------------------------------------------------------ generic kv
 def key_path(ns, key):
     safe = hashlib.sha1(key.encode()).hexdigest()[:16]
@@ -92,12 +135,8 @@ def key_path(ns, key):
 
 def get(ns, key, ttl=None):
     p = key_path(ns, key)
-    if not os.path.exists(p):
-        return None
-    try:
-        with open(p, encoding="utf-8") as f:
-            d = json.load(f)
-    except Exception:
+    d = read_json(p)
+    if not isinstance(d, dict):
         return None
     if ttl and time.time() - d.get("_ts", 0) > ttl:
         return None
@@ -108,9 +147,7 @@ def put(ns, key, value, ttl=None):
     d = {"key": key, "value": value, "_ts": time.time()}
     if ttl:
         d["_ttl"] = ttl
-    with open(key_path(ns, key), "w", encoding="utf-8") as f:
-        json.dump(d, f)
-    return key_path(ns, key)
+    return atomic_write_json(key_path(ns, key), d)
 
 
 # ------------------------------------------------------------------ inspection
@@ -160,6 +197,19 @@ def prune(days=1.0, dry_run=False):
         if ns in PROTECTED or not os.path.isdir(os.path.join(r, ns)):
             continue
         for f in _files(ns):
+            if os.path.basename(f).startswith(TMP_PREFIX):
+                # debris from a writer that died between open() and replace():
+                # no process can still own a temp file this old
+                if _age_days(f) * 86400 > 3600:
+                    if not dry_run:
+                        try:
+                            os.unlink(f)
+                        except OSError:
+                            pass
+                    removed += 1
+                else:
+                    kept += 1
+                continue
             if not f.endswith(".json"):        # never touch binaries
                 kept += 1
                 continue

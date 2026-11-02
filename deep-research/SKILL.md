@@ -1,7 +1,7 @@
 ---
 name: deep-research
 description: Web search, page reading and multi-source deep research with no API key — twenty-one providers, five-stage fetch fallback with machine-readable rewrites (direct → relays → two vendor readers → Wayback), relevance gating, cross-provider agreement ranking, and cited markdown reports. Use whenever a question needs current facts, verification, comparison of products/APIs, or "look this up and tell me what you find".
-version: 1.5.0
+version: 1.6.0
 license: MIT
 ---
 

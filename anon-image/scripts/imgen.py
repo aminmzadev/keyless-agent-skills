@@ -37,6 +37,18 @@ TIMEOUT = 180
 
 
 # --------------------------------------------------------------------------- io
+# One generated or edited image, base64 or raw, never comes close to this. The cap
+# exists so a broken image host cannot make one request eat the agent's memory.
+MAX_BODY = 32 * 1024 * 1024
+
+
+def _read_capped(resp, cap=MAX_BODY):
+    raw = resp.read(cap + 1)
+    if len(raw) > cap:
+        raise RuntimeError(f"response over {cap // 1048576} MB, refused")
+    return raw
+
+
 def _req(url, data=None, headers=None, timeout=TIMEOUT, method=None):
     h = {"User-Agent": UA, "Accept": "*/*"}
     if headers:
@@ -46,9 +58,10 @@ def _req(url, data=None, headers=None, timeout=TIMEOUT, method=None):
     req = urllib.request.Request(url, data=data, headers=h, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read(), dict(r.headers)
+            return r.status, _read_capped(r), dict(r.headers)
     except urllib.error.HTTPError as e:
-        return e.code, e.read(), dict(e.headers or {})
+        with e:
+            return e.code, _read_capped(e), dict(e.headers or {})
 
 
 def post_json(url, payload, timeout=TIMEOUT):
@@ -146,7 +159,8 @@ def cmd_edit(a):
         raise SystemExit(
             f"input is {size_mb:.1f}MB; the endpoint accepts {MAX_UPLOAD_MB}MB. "
             f"Resize first: ffmpeg -i {src} -vf scale=1536:-2 small.jpg")
-    b64 = base64.b64encode(open(src, "rb").read()).decode()
+    with open(src, "rb") as fh:          # a leaked handle here breaks --edit loops
+        b64 = base64.b64encode(fh.read()).decode()
     t0 = time.time()
     code, js = post_json(PTI, {"prompt": a.prompt, "ratio": "auto", "imageBase64": b64},
                          timeout=TIMEOUT)
