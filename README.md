@@ -8,7 +8,7 @@ No API keys. No accounts. No sign-ups. No telemetry. Just `python3`, `curl`-shap
 
 [![CI](https://github.com/aminmzadev/keyless-agent-skills/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aminmzadev/keyless-agent-skills/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/aminmzadev/keyless-agent-skills?sort=semver&display_name=release)](https://github.com/aminmzadev/keyless-agent-skills/releases)
-[![License](https://img.shields.io/github/license/aminmzadev/keyless-agent-skills)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/aminmzadev/keyless-agent-skills)](https://github.com/aminmzadev/keyless-agent-skills/commits/main)
 
 [![No API key](https://img.shields.io/badge/API%20key-not%20required-2ea44f)](#the-promise)
