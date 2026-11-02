@@ -1,4 +1,4 @@
-# deep-research — provider status (verified 2026-11-01)
+# deep-research — provider status (verified 2026-11-02)
 
 ## Working without a key
 
@@ -73,3 +73,17 @@ PDF: `pdftotext` (poppler) → `pypdf` → reader proxy.
 | fetched pages | `~/.cache/agent-skills/fetch/` | 24 h |
 
 `--no-cache` on either tool bypasses and rewrites.
+
+## Vendor tier (opt-in, no key, no SLA)
+
+Not in `--all` and not in any default group. Add with `--group vendor` or `--with-vendor`.
+
+| Provider | Transport | Measured 2026-11-02 | Notes |
+|---|---|---|---|
+| `keenable` | `POST api.keenable.ai/v1/search/public` | 0.2 s, excerpts capped at 1,200 chars | sends `X-Keenable-Title: keyless-agent-skills` (an app id is required; ours, not a borrowed one) |
+| `firecrawl` | `POST api.firecrawl.dev/v2/search` | 0.4 s, 400–700 char snippets, best domain diversity | no `Authorization` header at all |
+| `exa` | `POST mcp.exa.ai/mcp` JSON-RPC `web_search_exa` | 0.5 s, ~2,700 char excerpts | search only — its extract truncates every page at ~3,100 chars |
+
+Why opt-in: these are undocumented free tiers. They answered 5/5 queries on the day
+our classic general providers were blocked from this host, but they can require a key
+or disappear without notice. Never make one the only path.

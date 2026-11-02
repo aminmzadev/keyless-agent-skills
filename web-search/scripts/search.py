@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # ---
 # Published as the `web-search` skill. Canonical source: deep-research/scripts/.
-# Edit there, then run ./sync.sh (synced 2026-11-01).
+# Edit there, then run ./sync.sh (synced 2026-11-02).
 # ---
 """
 search.py — web search for agents with no API key, no account and no vendor lock-in.
 
-Twelve providers, four groups, automatic fallback. Every provider here was
+Twenty providers, five groups plus an opt-in vendor tier, automatic fallback. Every provider here was
 verified to work from a bare `curl`/urllib session; ones that need auth or that
 started blocking crawlers (DuckDuckGo HTML, Brave, Mojeek, Ecosia, Reddit,
 Semantic Scholar) are deliberately absent.
@@ -17,6 +17,8 @@ Semantic Scholar) are deliberately absent.
   search.py "speech synthesis" --group academic --limit 5
   search.py "rust async" --all --json         # every provider, merged + ranked
   search.py "numpy" --provider pypi           # package lookup
+  search.py "rust async" --group vendor       # vendor APIs: keyless, no SLA
+  search.py "rust async" --web --with-vendor  # web group plus the vendor tier
   search.py --list-providers
 
 Exit codes: 0 ok (at least one provider answered) · 2 all providers failed
@@ -35,7 +37,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-NO_OUTER_RETRY = {"ddg", "ddg_lite", "bing"}   # these retry proxies internally
+NO_OUTER_RETRY = {"ddg", "ddg_lite", "bing",
+                  "keenable", "firecrawl", "exa"}   # internal retries / no double-hammering
 
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
@@ -68,10 +71,10 @@ def with_retries(fn, what, retries=RETRIES):
     raise RuntimeError(f"{what}: {last}")
 
 
-def item(title, url, snippet="", provider="", rank=0, extra=None):
+def item(title, url, snippet="", provider="", rank=0, extra=None, cap=500):
     d = {"title": (title or "").strip()[:300],
          "url": (url or "").strip(),
-         "snippet": re.sub(r"\s+", " ", (snippet or "")).strip()[:500],
+         "snippet": re.sub(r"\s+", " ", (snippet or "")).strip()[:cap],
          "provider": provider,
          "rank": rank}
     if extra:
@@ -587,6 +590,127 @@ def p_ddg_ia(q, n):
     return out
 
 
+
+# ------------------------------------------------------------------ vendor tier
+# These three call vendor search APIs that answer without a credential. They are
+# opt-in (--group vendor / --with-vendor) because they are borrowed
+# infrastructure: undocumented, unversioned, and able to vanish without notice.
+# Verified 2026-11-02: 8 results each, 0.2-0.5 s, no throttling at 6 sequential
+# and 5 concurrent calls. Never make one of them the only path.
+VENDOR_UA = "keyless-agent-skills/1.3 (+https://github.com/aminmzadev/keyless-agent-skills)"
+# Keenable wants an app identifier; it is ours, not somebody else's product name.
+VENDOR_TITLE = "keyless-agent-skills"
+VENDOR_SNIPPET_CAP = 1200      # their value is the excerpt, not the link
+
+KEENABLE_URL = "https://api.keenable.ai/v1/search/public"
+FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search"
+EXA_MCP_URL = "https://mcp.exa.ai/mcp"
+
+
+def _endpoint(default, env):
+    """Tests and self-hosted gateways point these at a local server."""
+    return os.environ.get(env, default)
+
+
+def _post_json(url, payload, headers=None, timeout=25):
+    h = {"User-Agent": VENDOR_UA, "Content-Type": "application/json",
+         "Accept": "application/json"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=h, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def p_keenable(q, n):
+    """Keenable public search — fastest general index measured here (0.2 s), long excerpts."""
+    js = _post_json(_endpoint(KEENABLE_URL, "KEENABLE_SEARCH_URL"),
+                    {"query": q, "max_results": max(1, n)},
+                    {"X-Keenable-Title": VENDOR_TITLE})
+    rows = js.get("results") or js.get("data") or []
+    out = []
+    for i, r in enumerate(rows[:n]):
+        if not isinstance(r, dict):
+            continue
+        out.append(item(r.get("title") or "", r.get("url") or "",
+                        r.get("snippet") or r.get("description") or "",
+                        "keenable", i + 1, cap=VENDOR_SNIPPET_CAP))
+    return [r for r in out if r["url"]]
+
+
+def p_firecrawl(q, n):
+    """Firecrawl's public search endpoint — called with no Authorization header."""
+    js = _post_json(_endpoint(FIRECRAWL_SEARCH_URL, "FIRECRAWL_SEARCH_URL"),
+                    {"query": q, "limit": max(1, n)})
+    data = js.get("data") or {}
+    rows = data.get("web") if isinstance(data, dict) else None
+    rows = rows or (data if isinstance(data, list) else []) or []
+    out = []
+    for i, r in enumerate(rows[:n]):
+        if not isinstance(r, dict):
+            continue
+        out.append(item(r.get("title") or "", r.get("url") or "",
+                        r.get("description") or r.get("snippet") or "",
+                        "firecrawl", i + 1, cap=VENDOR_SNIPPET_CAP))
+    return [r for r in out if r["url"]]
+
+
+def _parse_exa_text(text, n):
+    """Exa's MCP tool answers in markdown-ish blocks: Title / URL / Highlights."""
+    out = []
+    blocks = re.split(r"(?m)^\s*Title:\s*", text)
+    for blk in blocks[1:]:
+        title = blk.splitlines()[0].strip() if blk.strip() else ""
+        m = re.search(r"(?m)^\s*URL:\s*(\S+)", blk)
+        if not m:
+            continue
+        url = m.group(1).strip()
+        body = blk[m.end():]
+        body = re.sub(r"(?m)^\s*(Text|Highlights|Published Date|Author):\s*", "", body)
+        out.append(item(title, url, body, "exa", len(out) + 1, cap=VENDOR_SNIPPET_CAP))
+        if len(out) >= n:
+            break
+    return out
+
+
+def p_exa(q, n):
+    """Exa via its public MCP endpoint, JSON-RPC tools/call (search only).
+
+    Extract is deliberately absent: measured on six pages it returned a constant
+    ~3,100 characters, i.e. a hard truncation, which makes it useless as a reader.
+    """
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": "web_search_exa",
+                          "arguments": {"query": q, "numResults": max(1, n)}}}
+    h = {"User-Agent": VENDOR_UA, "Content-Type": "application/json",
+         "Accept": "application/json, text/event-stream"}
+    req = urllib.request.Request(_endpoint(EXA_MCP_URL, "EXA_MCP_URL"),
+                                 data=json.dumps(payload).encode(), headers=h, method="POST")
+    with urllib.request.urlopen(req, timeout=25) as r:
+        raw = r.read().decode("utf-8", "replace")
+    text = ""
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        content = ((obj.get("result") or {}).get("content") or [])
+        if content and isinstance(content[0], dict):
+            text = content[0].get("text") or ""
+            break
+    if not text:
+        raise RuntimeError("exa: unparseable MCP payload")
+    rows = _parse_exa_text(text, n)
+    if not rows:
+        raise RuntimeError("exa: no parsable results")
+    return rows
+
+
 PROVIDERS = {
     "bing": (p_bingweb, "web"), "ddg": (p_ddg, "web"), "ddg_lite": (p_ddg_lite, "spare"),
     "bingnews": (p_bingnews, "web"), "gnews": (p_gnews, "web"),
@@ -596,6 +720,8 @@ PROVIDERS = {
     "github": (p_github, "tech"), "npm": (p_npm, "tech"), "pypi": (p_pypi, "tech"),
     "arxiv": (p_arxiv, "academic"), "openalex": (p_openalex, "academic"),
     "europepmc": (p_europepmc, "academic"), "crossref": (p_crossref, "academic"),
+    "keenable": (p_keenable, "vendor"), "firecrawl": (p_firecrawl, "vendor"),
+    "exa": (p_exa, "vendor"),
 }
 GROUPS = {
     # bing_rss needs no relay at all: when the relays are throttled it is the
@@ -604,9 +730,12 @@ GROUPS = {
     "web": ["bing", "ddg", "wikipedia", "bing_rss"],
     "tech": ["hn", "stackexchange", "github"],
     "academic": ["arxiv", "openalex", "europepmc"],
+    # vendor APIs: no key, no account, but borrowed infrastructure with no SLA.
+    # Opt-in on purpose (--group vendor or --with-vendor), never in "all".
+    "vendor": ["keenable", "firecrawl", "exa"],
     # pypi is a package *lookup*, not a search — excluded from "all" on purpose
     # ddg_lite is the same engine through the same proxies: a manual spare
-    "all": [k for k in PROVIDERS if k not in ("pypi", "ddg_lite")],
+    "all": [k for k in PROVIDERS if k not in ("pypi", "ddg_lite", "keenable", "firecrawl", "exa")],
 }
 
 
@@ -786,7 +915,8 @@ def cmd_list(a):
             continue
         print(f"{g}:")
         for n in names:
-            print(f"  {n:<15}{PROVIDERS[n][0].__doc__ or ''}")
+            doc = (PROVIDERS[n][0].__doc__ or "").strip().splitlines()
+            print(f"  {n:<15}{doc[0] if doc else ''}")
 
 
 def main():
@@ -795,6 +925,8 @@ def main():
     ap.add_argument("--provider", action="append", default=None)
     ap.add_argument("--group", default="web", choices=list(GROUPS))
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--with-vendor", action="store_true",
+                    help="add the vendor tier (keenable, firecrawl, exa) to the chosen group")
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--parallel", type=int, default=6)
     ap.add_argument("--json", action="store_true")
@@ -809,7 +941,10 @@ def main():
         ap.error("give a query")
 
     group = "all" if a.all else a.group
-    res = search(q, providers=a.provider, group=group, limit=a.limit,
+    providers = a.provider
+    if a.with_vendor and not providers:
+        providers = list(dict.fromkeys(GROUPS.get(group, GROUPS["web"]) + GROUPS["vendor"]))
+    res = search(q, providers=providers, group=group, limit=a.limit,
                  parallel=a.parallel, use_cache=not a.no_cache)
 
     if a.json:

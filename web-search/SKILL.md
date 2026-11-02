@@ -1,13 +1,15 @@
 ---
 name: web-search
-description: Keyless multi-provider web search for agents. Seventeen providers behind one command, with automatic fallback, query relaxation, cross-provider agreement ranking and domain diversity. Use for any "look this up", "what is the latest", "find me a library/tool/paper" request when you only need results, not a full report.
-version: 1.2.0
+description: Keyless multi-provider web search for agents. Twenty providers behind one command — seventeen classic ones plus an opt-in vendor tier (Keenable, Firecrawl, Exa) that returns page excerpts instead of teasers — with automatic fallback, query relaxation, cross-provider agreement ranking and domain diversity. Use for any "look this up", "what is the latest", "find me a library/tool/paper" request when you only need results, not a full report.
+version: 1.3.0
 license: MIT
 ---
 
 # web-search
 
-One command, seventeen providers, no key and no account. This is the *finding* half
+One command, twenty providers, no key and no account. Seventeen are classic
+SERP scrapers and public data endpoints; three are vendor APIs with an anonymous
+free tier, kept in their own opt-in group. This is the *finding* half
 of the research pair; `fetch-page` reads, `deep-research` orchestrates both.
 
 ## Use this when
@@ -27,6 +29,8 @@ search.py "python subprocess timeout" --group tech
 search.py "speech synthesis" --group academic --limit 5
 search.py "rust async" --all --json             # every provider, merged and ranked
 search.py "numpy" --provider pypi               # package lookup
+search.py "rust async" --group vendor           # vendor tier only (see below)
+search.py "rust async" --with-vendor            # web group + vendor tier
 search.py --list-providers
 ```
 
@@ -123,3 +127,25 @@ AGENT_SKILLS_CACHE=/tmp/c python3 scripts/search.py "q"   # throwaway cache
 
 Model files are protected from `clear all` and `prune` on purpose — they are the
 one thing here that costs real time to get back.
+
+## The vendor tier (opt-in)
+
+Three providers call a vendor's own search API with no credential:
+
+| provider | endpoint | measured |
+|---|---|---|
+| `keenable` | `api.keenable.ai/v1/search/public` (+ `X-Keenable-Title: keyless-agent-skills`) | 0.2 s, ~1,000–1,200 char excerpts |
+| `firecrawl` | `api.firecrawl.dev/v2/search` (no auth header at all) | 0.4 s, 400–700 char snippets, best domain diversity |
+| `exa` | `mcp.exa.ai/mcp` JSON-RPC `web_search_exa` | 0.5 s, ~2,700 char excerpts |
+
+They are **not in `--all`** and never in a default group. Measured reason to have
+them: on the day of testing, our classic general providers were mostly blocked
+from this host — `bing` returned off-topic results and a 403 from every reader,
+`ddg` failed after 41 s, `bingnews`/`gnews`/`ddg_ia` returned zero — while these
+three answered 5 of 5 queries first try. Their excerpts are also 5–20× longer,
+so the agent often skips a fetch entirely.
+
+The reason they stay opt-in: they are undocumented free tiers with no SLA. They
+can start enforcing a key, or vanish, without notice. Use them as a supplement
+(`--with-vendor`), not as the only path. `exa` is search-only on purpose — its
+extract returns a constant ~3,100 characters per page, i.e. a hard truncation.

@@ -1,14 +1,15 @@
 ---
 name: fetch-page
-description: Turn any URL into clean markdown for an agent, with a three-stage fallback (direct → two independent kinds of relay → Wayback Machine), PDF support and a 24-hour cache. Use whenever you have a URL and need its readable content — documentation, articles, changelogs, terms pages, papers, or a page a plain request cannot get through.
-version: 1.2.0
+description: Turn any URL into clean markdown for an agent, with a four-stage fallback (direct → two independent kinds of relay → a vendor scraper that renders JS and gets past bot walls → Wayback Machine), a hard wall-clock deadline, PDF support and a 24-hour cache. Use whenever you have a URL and need its readable content — documentation, articles, changelogs, terms pages, papers, or a page a plain request cannot get through.
+version: 1.3.0
 license: MIT
 ---
 
 # fetch-page
 
-Give it URLs, get markdown. Three transports per URL, in order, so a blocked or
-JS-heavy page is not a dead end.
+Give it URLs, get markdown. Four transports per URL, in order, so a blocked or
+JS-heavy page is not a dead end — and a hard deadline, so a hostile page cannot
+hang the agent that asked.
 
 ## Use this when
 
@@ -27,6 +28,8 @@ fetch.py https://vheer.com/terms --max-chars 8000
 fetch.py url1 url2 url3 --out pages/ --json
 fetch.py https://example.com --links            # also extract the links
 fetch.py https://example.com --text             # print the text, no files
+fetch.py https://example.com --deadline 15      # give up after 15s, no matter what
+fetch.py https://example.com --no-vendor        # four stages -> three (no vendor call)
 ```
 
 ## The fallback chain
@@ -109,3 +112,44 @@ after the first pass.
 - `--max-chars` defaults to 20000, which is roughly a long article. Raise it for
   documentation pages, lower it when you only need the top of a page.
 - Respect the hosts you hit: 4 parallel fetches is the default and is plenty.
+
+## The four stages
+
+| # | stage | what it is | why |
+|---|---|---|---|
+| 1 | `direct` | urllib with a browser UA, gzip, redirects, HTML→markdown | free, fast, no third party |
+| 2 | `reader` | `r.jina.ai` markdown → CORS-proxied HTML (allorigins, cors.lol, codetabs) | JS shells, soft paywalls |
+| 3 | `vendor` | Firecrawl's public `/v2/scrape`, no credential | renders JS, survives Cloudflare |
+| 4 | `archive` | Wayback Machine snapshot | pages that are gone or blocked forever |
+
+Stage 3 exists because it fixes real failures, not theoretical ones. Measured on
+2026-11-02 against this exact chain: `g2.com` (Cloudflare) and `medium.com` hung
+the reader stage indefinitely and returned nothing — the vendor stage returned
+6,384 and 4,760 characters in about two seconds. `x.com` went from 1,669 to
+36,318 characters. It is third, not first, because it is borrowed infrastructure
+with no SLA and the direct path costs the vendor nothing. Disable it with
+`--no-vendor` or `FETCH_VENDOR=0`.
+
+## The deadline
+
+`--deadline` (default 45 s) is a hard wall-clock cap per URL, enforced from
+*outside* each stage: a stage that ignores its own socket timeouts is abandoned
+in a daemon thread and the next stage gets its turn. Each stage also receives a
+share of the deadline (direct 35%, reader 40%, vendor 50%, archive 30%), so a
+hanging relay cannot starve the stage behind it.
+
+Before this existed, `fetch.py https://www.g2.com/…` never returned. It now
+returns in 16 s with content — never by hanging.
+
+Two fields report what happened, and they mean different things:
+
+| field | meaning |
+|---|---|
+| `deadline_exceeded` | the *call* was cut short and returned `ok: false` |
+| `stages_cut` | stages abandoned along the way, on success too |
+
+A real g2.com run under `--deadline 25` gives `ok: true`, `source:
+vendor:firecrawl`, `deadline_exceeded: false`, `stages_cut: ["reader"]` — the
+reader hung, the vendor stage answered anyway, and nothing was lost. Read
+`stages_cut` when you are debugging latency; read `deadline_exceeded` when you
+are deciding whether to retry.

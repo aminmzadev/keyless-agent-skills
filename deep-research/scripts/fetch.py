@@ -5,7 +5,14 @@ fetch.py — turn any URL into clean markdown for an agent, with three fallbacks
   1. direct      : urllib + browser UA, gzip, redirect following, HTML->text
   2. reader      : r.jina.ai markdown -> CORS-proxied HTML (allorigins, cors.lol,
                    codetabs), whichever answers first
-  3. archive     : Wayback Machine snapshot, for pages that are gone or blocked
+  3. vendor      : Firecrawl's anonymous scrape endpoint — renders JS, survives
+                   Cloudflare, and is the only stage that reaches some pages
+  4. archive     : Wayback Machine snapshot, for pages that are gone or blocked
+
+Every call has a hard wall-clock deadline (--deadline, default 45 s). Individual
+stages already carry socket timeouts, but a dead relay or a DNS black hole can
+ignore them; the deadline is enforced from outside the stage so a hostile page
+can never hang the caller.
 
 Handles HTML, PDF (pdftotext or pypdf) and plain text. Caches to disk so a
 research loop doesn't hammer the same host twice.
@@ -27,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -350,6 +358,85 @@ def fetch_archive(url, timeout, keep_links):
 
 
 # ----------------------------------------------------------------------- cache
+VENDOR_UA = "keyless-agent-skills/1.3 (+https://github.com/aminmzadev/keyless-agent-skills)"
+FIRECRAWL_SCRAPE = "https://api.firecrawl.dev/v2/scrape"
+
+
+def _vendor_endpoint():
+    """Override for tests and for anyone running a self-hosted Firecrawl."""
+    return os.environ.get("FIRECRAWL_SCRAPE_URL", FIRECRAWL_SCRAPE)
+
+
+def fetch_vendor(url, timeout, keep_links=False):
+    """Stage 3. Firecrawl's public scrape endpoint, called with no credential.
+
+    This is the stage that earns its place: it renders JS and gets past bot
+    walls that stop the reader relays, so pages Medium and Cloudflare hand back
+    a 403 to a plain HTTP client still come out as markdown here.
+
+    It is deliberately *not* first. It is borrowed infrastructure with no SLA,
+    and the direct path costs the vendor nothing.
+
+    Disable with --no-vendor or FETCH_VENDOR=0.
+    """
+    t0 = time.time()
+    body = json.dumps({"url": url, "formats": ["markdown"]}).encode()
+    req = urllib.request.Request(
+        _vendor_endpoint(), data=body, method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": VENDOR_UA,
+                 "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        payload = json.loads(r.read().decode("utf-8", "replace"))
+    data = payload.get("data") or {}
+    text = data.get("markdown") or data.get("html") or ""
+    if not text.strip():
+        raise RuntimeError("vendor: empty markdown")
+    meta = data.get("metadata") or {}
+    return {"title": meta.get("title") or url, "text": text,
+            "meta": {"content_type": "markdown", "vendor": "firecrawl",
+                     "status_code": meta.get("statusCode")},
+            "links": [], "source": "vendor:firecrawl",
+            "final_url": meta.get("url") or url,
+            "status": meta.get("statusCode") or 200,
+            "elapsed": round(time.time() - t0, 2)}
+
+
+class StageTimeout(RuntimeError):
+    """A stage ignored its own socket timeouts and had to be abandoned."""
+
+
+def _run_with_budget(fn, budget, name="stage"):
+    """Run fn() but never wait longer than *budget* seconds for it.
+
+    A daemon thread is the only way to bound a stage that blocks inside a
+    socket read or a DNS lookup: socket timeouts do not cover every hop, and a
+    threading future's timeout would still leave the thread alive and keep the
+    interpreter from exiting.
+    """
+    box = {}
+
+    def runner():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:      # noqa: BLE001 - re-raised on the caller side
+            box["error"] = exc
+
+    worker = threading.Thread(target=runner, daemon=True, name=f"fetch-{name}")
+    worker.start()
+    worker.join(max(0.1, budget))
+    if worker.is_alive():
+        raise StageTimeout(f"no answer within {budget:.0f}s")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def _vendor_enabled(flag):
+    if not flag:
+        return False
+    return os.environ.get("FETCH_VENDOR", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
 def cache_path(url):
     return os.path.join(CACHE, hashlib.sha1(url.encode()).hexdigest() + ".json")
 
@@ -381,7 +468,8 @@ def cache_put(url, data):
 
 # -------------------------------------------------------------------- the thing
 def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
-          use_reader=True, use_archive=True, retries=1):
+          use_reader=True, use_archive=True, retries=1, deadline=45.0,
+          use_vendor=True):
     hit = cache_get(url, ttl)
     # a cached entry only remembers links if it was collected with keep_links;
     # a caller that needs them (research --follow) must not inherit a linkless hit
@@ -389,20 +477,39 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
         hit = None
     if hit:
         hit["text"] = (hit.get("text") or "")[:max_chars]
+        hit["chars"] = len(hit["text"])       # a cached page must still honour max_chars
         hit["cached"] = True
         return hit
 
-    chain = [("direct", lambda: fetch_direct(url, timeout, keep_links))]
+    hard_end = time.monotonic() + max(1.0, float(deadline))
+    deadline_exceeded = False
+    stages_cut = []
+
+    # Each stage gets a *share* of the deadline, not the whole thing: a stage
+    # that hangs must not starve the stages behind it. Without this the reader
+    # relays can eat the entire budget and the vendor stage — the one that
+    # actually reaches hostile pages — never runs.
+    total = max(1.0, float(deadline))
+    chain = [("direct", lambda t: fetch_direct(url, t, keep_links), 0.35)]
     if use_reader:
-        chain.append(("reader", lambda: fetch_reader(url, max(timeout, 40), keep_links)))
+        chain.append(("reader", lambda t: fetch_reader(url, t, keep_links), 0.40))
+    if _vendor_enabled(use_vendor):
+        chain.append(("vendor", lambda t: fetch_vendor(url, t, keep_links), 0.50))
     if use_archive:
-        chain.append(("archive", lambda: fetch_archive(url, timeout, keep_links)))
+        chain.append(("archive", lambda t: fetch_archive(url, t, keep_links), 0.30))
 
     errors = []
-    for name, fn in chain:
+    for name, fn, share in chain:
         for attempt in range(retries + 1):
+            remaining = hard_end - time.monotonic()
+            if remaining <= 0.5:
+                deadline_exceeded = True
+                errors.append(f"{name}: skipped, deadline ({float(deadline):g}s) reached")
+                break
+            budget = min(float(timeout), remaining, total * share)
             try:
-                res = fn()
+                res = _run_with_budget(lambda f=fn, t=max(1.0, budget): f(t),
+                                       budget, name)
                 if not (res.get("text") or "").strip():
                     raise RuntimeError("empty text")
                 res["text"] = res["text"][:max_chars]
@@ -411,20 +518,32 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
                 res["url"] = url
                 res["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 res["errors"] = errors
+                # the call succeeded, so the deadline did not cut *it*: record which
+                # stages were abandoned instead of pretending the answer is partial
+                res["deadline_exceeded"] = False
+                res["stages_cut"] = list(stages_cut)
                 if keep_links:
                     res["_links_collected"] = True
                 cache_put(url, res)
                 return res
             except urllib.error.HTTPError as e:
                 errors.append(f"{name}: HTTP {e.code}")
-                if e.code in (401, 403, 404, 410):
+                # a vendor that answered with an error has answered: retrying a
+                # borrowed free endpoint is how you get rate-limited
+                if e.code in (401, 403, 404, 410, 429) or name == "vendor" or e.code >= 500:
                     break
+            except StageTimeout as e:
+                deadline_exceeded = True
+                stages_cut.append(name)
+                errors.append(f"{name}: {e}")
+                break
             except Exception as e:
                 errors.append(f"{name}: {str(e)[:110]}")
-            time.sleep(0.8 * (attempt + 1))
+            time.sleep(min(0.8 * (attempt + 1), max(0.0, hard_end - time.monotonic())))
 
     return {"ok": False, "url": url, "title": "", "text": "", "chars": 0,
-            "source": None, "errors": errors, "links": []}
+            "source": None, "errors": errors, "links": [],
+            "deadline_exceeded": deadline_exceeded, "stages_cut": list(stages_cut)}
 
 
 # ------------------------------------------------------------------------- cli
@@ -453,6 +572,11 @@ def main():
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-reader", action="store_true")
     ap.add_argument("--no-archive", action="store_true")
+    ap.add_argument("--no-vendor", action="store_true",
+                    help="skip the Firecrawl extract stage (also FETCH_VENDOR=0)")
+    ap.add_argument("--deadline", type=float, default=45.0,
+                    help="hard wall-clock cap per URL in seconds (default 45); "
+                         "a stage that ignores its own timeout is abandoned")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--text", action="store_true", help="print the extracted text")
@@ -463,7 +587,8 @@ def main():
     results = []
     with ThreadPoolExecutor(max_workers=a.parallel) as ex:
         futs = {ex.submit(fetch, u, a.timeout, a.max_chars, a.links, ttl,
-                          not a.no_reader, not a.no_archive): u for u in a.urls}
+                          not a.no_reader, not a.no_archive, 1, a.deadline,
+                          not a.no_vendor): u for u in a.urls}
         for f in as_completed(futs):
             results.append(f.result())
 

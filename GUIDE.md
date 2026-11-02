@@ -18,7 +18,7 @@ of Python that assume nothing about your machine beyond `python3`.
 | 2 | `anon-image` | prompt → image, image + instruction → edit, contact sheets | `imgen.py` |
 | 3 | `anon-audio` | text → speech: Edge (online), Google (fallback), **Piper (offline)** | `tts.py` |
 | 4 | `ffmpeg-pipeline` | stills → narrated MP4, GIF, captions, loudness, frame sheets | `vidkit.py` |
-| 5 | `web-search` | one query → ranked results from 17 keyless sources | `search.py` |
+| 5 | `web-search` | one query → ranked results from 20 keyless sources (17 classic + 3 vendor) | `search.py` |
 | 6 | `fetch-page` | one URL → clean markdown, whatever the page throws at you | `fetch.py` |
 | 7 | `deep-research` | question → search → read → **follow links** → cited report | `research.py` |
 

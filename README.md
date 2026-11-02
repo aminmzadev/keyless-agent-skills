@@ -38,8 +38,8 @@ has the bundle zip plus one zip per skill and a `SHA256SUMS.txt`. Or just clone 
 
 | Skill | Does | Entry point | Hard deps |
 |---|---|---|---|
-| [`web-search`](web-search/SKILL.md) | 17 keyless providers, groups, ranking, query relaxation | `scripts/search.py` | python3 |
-| [`fetch-page`](fetch-page/SKILL.md) | URL → markdown, 3-stage fallback, PDFs, cache | `scripts/fetch.py` | python3 (+ poppler/pypdf for local PDFs) |
+| [`web-search`](web-search/SKILL.md) | 20 keyless providers (17 classic + 3 vendor), groups, ranking, query relaxation | `scripts/search.py` | python3 |
+| [`fetch-page`](fetch-page/SKILL.md) | URL → markdown, four-stage fallback, PDFs, cache | `scripts/fetch.py` | python3 (+ poppler/pypdf for local PDFs) |
 | [`deep-research`](deep-research/SKILL.md) | search → read → **follow links** → cited report | `scripts/research.py` | python3 |
 
 `web-search` and `fetch-page` are independent: install either alone and it works.
