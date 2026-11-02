@@ -59,7 +59,9 @@ cp "$src/GUIDE.md" "$src/README.md" "$src/MANIFEST.json" "$src/install.sh" "$out
 
 python3 "$here/make_package.py" "$src" "$out" "$OWNER" "$NAME" "$VERSION"
 
-cp "$here/LICENSE" "$here/NOTICE" "$here/DISCLOSURE" "$out/"
+# LICENSE/NOTICE/DISCLOSURE live at the repo root (GitHub only detects a licence
+# there, and the licence badge reads "not specified" without it)
+cp "$src/LICENSE" "$src/NOTICE" "$src/DISCLOSURE" "$out/"
 # workflows live at the repo root (GitHub only reads .github/workflows there),
 # and are copied into the generated tree so the package carries its own CI too
 mkdir -p "$out/.github/workflows"

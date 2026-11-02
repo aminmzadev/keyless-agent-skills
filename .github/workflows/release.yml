@@ -32,7 +32,8 @@ jobs:
           mkdir -p dist
           find . -name __pycache__ -type d -exec rm -rf {} + || true
           zip -qr "dist/keyless-agent-skills-pack-v$V.zip" \
-            GUIDE.md README.md MANIFEST.json SECURITY.md install.sh test-all.sh sync.sh \
+            GUIDE.md README.md MANIFEST.json SECURITY.md LICENSE NOTICE DISCLOSURE \
+            install.sh test-all.sh sync.sh \
             shared packaging .github \
             skill-router anon-image anon-audio ffmpeg-pipeline \
             web-search fetch-page deep-research examples/README.md \
