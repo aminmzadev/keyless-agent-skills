@@ -42,7 +42,7 @@ just run `./install.sh --check` to see what your machine already has.
 | Skill | Does | Entry point | Hard deps |
 |---|---|---|---|
 | [`web-search`](web-search/SKILL.md) | 21 keyless providers (18 classic + 3 vendor), groups, ranking, query relaxation | `scripts/search.py` | python3 |
-| [`fetch-page`](fetch-page/SKILL.md) | URL → markdown, five-stage fallback + rewrites, wall detection, PDFs | `scripts/fetch.py` | python3 (poppler/pypdf optional — a built-in parser covers PDFs) |
+| [`fetch-page`](fetch-page/SKILL.md) | URL → markdown, six-stage fallback + rewrites, **reddit and X with their pictures**, wall detection, PDFs | `scripts/fetch.py` | python3 (poppler/pypdf optional — a built-in parser covers PDFs) |
 | [`deep-research`](deep-research/SKILL.md) | search → read → **follow links** → cited report | `scripts/research.py` | python3 |
 
 `web-search` and `fetch-page` are independent: install either alone and it works.

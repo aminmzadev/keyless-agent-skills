@@ -1,7 +1,7 @@
 ---
 name: fetch-page
 description: Turn any URL into clean markdown for an agent, with a five-stage fallback plus machine-readable rewrites (direct → two independent kinds of relay → two vendor readers that render JS and get past bot walls → Wayback Machine), and a PDF extractor that needs no dependency, a hard wall-clock deadline, PDF support and a 24-hour cache. Use whenever you have a URL and need its readable content — documentation, articles, changelogs, terms pages, papers, or a page a plain request cannot get through.
-version: 1.5.0
+version: 1.6.0
 license: MIT
 ---
 
@@ -31,13 +31,15 @@ fetch.py https://example.com --text             # print the text, no files
 fetch.py https://example.com --deadline 15      # give up after 15s, no matter what
 fetch.py https://example.com --no-vendor        # five stages -> three (no vendor calls)
 fetch.py https://example.com --no-rewrite       # skip the machine-readable twins
+fetch.py https://www.reddit.com/r/pics/comments/1xm0xm3/ --media pics/   # post + comments + images
+fetch.py https://x.com/Complex/status/2101466653175464354 --media x/     # tweet + photos/video
 ```
 
 ## The fallback chain
 
 | Stage | Transport | Handles |
 |---|---|---|
-| 0. rewrite | github blob → `raw.githubusercontent.com`; StackOverflow → `api.stackexchange.com` | the two hosts where the page is a UI around the content. Runs **before** direct |
+| 0. rewrite | reddit → arctic-shift API; x/twitter → fxtwitter API; github blob → raw; StackOverflow → `api.stackexchange.com` | the hosts where the page is a UI or a wall around the content. Runs **before** direct |
 | 1. direct | urllib, browser UA, gzip, redirects | normal pages; a hand-written `html.parser` extractor drops nav/footer/aside/forms and cookie/subscribe boilerplate, keeps headings and list structure |
 | 2. reader | `r.jina.ai/<url>` markdown, then the CORS relays (`allorigins` → `cors.lol` → `codetabs`) | JS-rendered pages, anti-bot walls, PDFs when no local extractor exists |
 | 3. vendor:firecrawl | `api.firecrawl.dev/v2/scrape`, no credential | the hard walls: JS shells, Cloudflare, 403-to-plain-HTTP pages |
@@ -63,6 +65,33 @@ relays:
 
 `--no-rewrite` turns the whole row off. Rewrites are keyless direct endpoints,
 so they are not affected by `--no-vendor`.
+
+**Reddit and X, with the pictures.** Both are closed to plain clients — reddit.com
+403s every datacenter IP (and `old.reddit`, `.json` and `/s/` share links with it),
+while x.com wants a session and its API wants a bearer token. Neither needs one:
+
+| you give it | it calls | you get |
+|---|---|---|
+| any reddit post (`/r/*/comments/<id>`, `redd.it/<id>`, `/gallery/<id>`) | `arctic-shift.photon-reddit.com/api/posts/ids?ids=<id>` + `/api/comments/search?link_id=<id>` | title, subreddit, score, selftext, **every image** (galleries in order, with dimensions), top 20 comments by score |
+| a subreddit or user page | `/api/posts/search?subreddit=…` (or `author=…`) | 25 newest posts with links and their images |
+| any x/twitter status | `api.fxtwitter.com/status/<id>` | author, date, text, **all photos at `name=orig`**, videos/gifs with duration, quoted tweet, counts |
+
+`--media DIR` downloads what it found: photos, and for reddit/X video posts the
+mp4 too, numbered so they stay in gallery order. `media` in the JSON lists every
+item before you download anything. Images come from `i.redd.it`, `preview.redd.it`
+(signed URLs straight out of the gallery metadata) and `pbs.twimg.com` /
+`video.twimg.com`, all of which answer plain HTTP without cookies.
+
+Measured 2026-11-02: reddit image post 2.0 s, gallery of 2 → both JPEGs saved and
+verified with `file`; subreddit listing 25 posts in 4 s; x post with three photos
+0.3 s, 3/3 saved; x video post returns the 1280×720 mp4 (65 s).
+
+What does **not** work here, and is therefore not in the chain: `old.reddit.com`
+and every `.json` endpoint (403), reddit `/s/` share links (403 — pass the
+canonical `/comments/<id>/` URL instead), redlib mirrors (429 / Cloudflare on all
+eight tried), `api.pullpush.io` (522 today, wired as a "maybe" not a path),
+nitter (Cloudflare), `api.vxtwitter.com` (Cloudflare) and the syndication
+endpoint (returns `{}` without a computed token).
 
 **Walls are not answers.** A relay that returns 200 with a bot challenge or a
 signup gate has not read the article. Every accepted body is checked before it
@@ -108,7 +137,8 @@ file.
   chars, fetched_at) plus a `## Links` section when `--links` is set
 
 `source` tells you which stage won — `direct`, `reader:jina`, `reader:allorigins`,
-`reader:cors.lol`, `vendor:firecrawl`, `vendor:exa`, or `wayback`. That matters: a Wayback result is a *snapshot*,
+`reader:cors.lol`, `vendor:firecrawl`, `vendor:exa`, `reddit:post`,
+`reddit:listing`, `x:post`, or `wayback`. That matters: a Wayback result is a *snapshot*,
 so check `snapshot_ts` before quoting it as current.
 
 **Why two kinds of relay:** on 2026-11-01 `r.jina.ai` began answering

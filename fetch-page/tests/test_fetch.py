@@ -67,6 +67,7 @@ class _Site:
         self.exa_sse = False          # answer as text/event-stream instead of JSON
         self.exa_raw: str | None = None
         self.exa_headers: dict = {}
+        self.json_routes: dict = {}
         self.page_html = "<html><head><title>t</title></head><body><p>hi</p></body></html>"
         self.site = self
 
@@ -78,6 +79,24 @@ class _Site:
 
             def do_GET(self):
                 outer.requests.append(self.path)
+                if self.path.startswith("/media/"):
+                    body = b"\xff\xd8\xff\xe0" + b"JPEGDATA" * 50 + b"\xff\xd9"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if outer.json_routes:
+                    for prefix, payload in outer.json_routes.items():
+                        if self.path.startswith(prefix):
+                            body = json.dumps(payload).encode()
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
                 if self.path.startswith("/json"):
                     body = json.dumps(outer.exa_payload).encode()
                     self.send_response(200)
@@ -610,9 +629,13 @@ class RewriteMappingTests(unittest.TestCase):
         self.assertEqual(a[0][0], b[0][0], "watch and youtu.be must map to the same rewrite")
         self.assertIn("v=dQw4w9WgXcQ", a[0][1])
 
-    def test_x_gets_mirror_candidates_in_order(self):
+    def test_x_tries_the_api_first_then_the_mirrors(self):
         out = fetch_mod.rewrite_candidates("https://x.com/rustlang/status/1")
-        self.assertEqual([c[0] for c in out], ["nitter", "nitter-privacydev", "xcancel"])
+        self.assertEqual([c[0] for c in out],
+                         ["x-post", "nitter", "nitter-privacydev", "xcancel"])
+        before, after = fetch_mod.order_rewrites(out)
+        self.assertEqual([c[0] for c in before], ["x-post"], "the JSON API must run before direct")
+        self.assertEqual(len(after), 3, "the mirrors stay as fallbacks")
 
     def test_arxiv_abs_gets_the_pdf(self):
         out = fetch_mod.rewrite_candidates("https://arxiv.org/abs/1706.03762")
@@ -797,6 +820,270 @@ class StdlibPdfTests(unittest.TestCase):
             else:
                 sys.modules["pypdf"] = orig_pypdf
         self.assertTrue(txt and "Hello PDF world" in txt, txt)
+
+
+REDDIT_POST = {"data": [{
+    "id": "abc123", "subreddit": "pics", "author": "someone", "title": "A sunset &amp; a cat",
+    "selftext": "", "score": 1234, "num_comments": 2, "created_utc": 1793634911,
+    "url": "https://i.redd.it/aaa.jpeg", "is_self": False, "post_hint": "image",
+    "permalink": "/r/pics/comments/abc123/a_sunset/", "is_gallery": False,
+    "over_18": False,
+}]}
+
+REDDIT_GALLERY = {"data": [{
+    "id": "gal123", "subreddit": "pics", "author": "someone", "title": "Four shots",
+    "selftext": "some context", "score": 5, "num_comments": 0, "created_utc": 1793634911,
+    "is_gallery": True, "url": "https://www.reddit.com/gallery/gal123",
+    "gallery_data": {"items": [{"media_id": "m2"}, {"media_id": "m1"}]},
+    "media_metadata": {
+        "m1": {"s": {"u": "https://i.redd.it/one.jpeg", "x": 100, "y": 200}},
+        "m2": {"s": {"u": "https://i.redd.it/two.jpeg?width=99", "x": 300, "y": 400}},
+    },
+}]}
+
+REDDIT_COMMENTS = {"data": [
+    {"body": "low score take", "score": 2, "author": "b"},
+    {"body": "the best answer", "score": 90, "author": "a"},
+    {"body": "[removed]", "score": 50, "author": "c"},
+]}
+
+REDDIT_LISTING = {"data": [
+    {"id": "p1", "subreddit": "ffmpeg", "author": "u1", "title": "ffmpeg.org down?",
+     "score": 3, "num_comments": 7, "created_utc": 1793634911, "permalink": "/r/ffmpeg/comments/p1/x/",
+     "url": "https://i.redd.it/x.jpeg"},
+    {"id": "p2", "subreddit": "ffmpeg", "author": "u2", "title": "how to zoompan",
+     "score": 9, "num_comments": 1, "created_utc": 1793634800, "permalink": "/r/ffmpeg/comments/p2/y/",
+     "url": "https://www.reddit.com/r/ffmpeg/"},
+]}
+
+X_TWEET = {"code": 200, "message": "OK", "tweet": {
+    "url": "https://x.com/someone/status/2101", "id": "2101",
+    "text": "look at this", "likes": 46979, "replies": 869, "reposts": 12, "views": 9559914,
+    "created_at": "Sun Sep 20 00:21:08 +0000 2026",
+    "author": {"name": "Someone", "screen_name": "someone"},
+    "media": {
+        "all": [{"type": "photo", "url": "https://pbs.twimg.com/media/A.jpg?name=orig"}],
+        "photos": [{"type": "photo", "url": "https://pbs.twimg.com/media/A.jpg?name=orig",
+                    "width": 1170, "height": 1463},
+                   {"type": "photo", "url": "https://pbs.twimg.com/media/B.jpg?name=orig",
+                    "width": 1638, "height": 2048}],
+        "videos": [{"type": "video", "url": "https://video.twimg.com/v/clip.mp4",
+                    "width": 1280, "height": 720, "duration": 65.1}],
+    },
+    "quote": {"text": "the original", "author": {"screen_name": "quoted"}},
+}}
+
+
+class RedditTargetTests(unittest.TestCase):
+    """Pure URL mapping: every shape of reddit link, and the one that cannot work."""
+
+    def test_post_urls(self):
+        for u in ("https://www.reddit.com/r/pics/comments/1xm0xm3/oc_sunset/",
+                  "https://old.reddit.com/r/pics/comments/1xm0xm3/",
+                  "https://np.reddit.com/r/AskReddit/comments/17vdtx2/x/",
+                  "https://redd.it/1xm0xm3",
+                  "https://www.reddit.com/gallery/1xm0qvj"):
+            tgt = fetch_mod.reddit_target(u)
+            self.assertIsNotNone(tgt, u)
+            self.assertEqual(tgt[0], "post", u)
+
+    def test_id_is_extracted(self):
+        self.assertEqual(fetch_mod.reddit_target(
+            "https://www.reddit.com/r/pics/comments/1xm0xm3/oc_sunset/")[1], "1xm0xm3")
+        self.assertEqual(fetch_mod.reddit_target("https://redd.it/1xm0xm3")[1], "1xm0xm3")
+
+    def test_subreddit_and_user_listings(self):
+        self.assertEqual(fetch_mod.reddit_target("https://www.reddit.com/r/pics/")[:2], ("listing", "pics"))
+        self.assertEqual(fetch_mod.reddit_target("https://www.reddit.com/r/pics/new")[2], {"sort": "asc"})
+        self.assertEqual(fetch_mod.reddit_target("https://www.reddit.com/user/someone/")[2], {"author": True})
+
+    def test_share_links_are_refused_not_guessed(self):
+        self.assertIsNone(fetch_mod.reddit_target("https://www.reddit.com/r/pics/s/AbCdEf"))
+
+    def test_non_reddit_urls(self):
+        self.assertIsNone(fetch_mod.reddit_target("https://example.com/r/pics/"))
+
+
+class XTargetTests(unittest.TestCase):
+    def test_status_urls(self):
+        for u in ("https://x.com/Complex/status/2101466653175464354",
+                  "https://twitter.com/NASA/status/1234567890123",
+                  "https://mobile.twitter.com/a/status/999999999",
+                  "https://x.com/i/status/2101466653175464354"):
+            tgt = fetch_mod.x_target(u)
+            self.assertIsNotNone(tgt, u)
+
+    def test_id_is_extracted(self):
+        self.assertEqual(fetch_mod.x_target("https://x.com/a/status/2101466653175464354")[1],
+                         "2101466653175464354")
+
+    def test_profiles_and_shorteners_are_refused(self):
+        self.assertIsNone(fetch_mod.x_target("https://x.com/Complex"))
+        self.assertIsNone(fetch_mod.x_target("https://t.co/abc"))
+
+
+class RedditMediaTests(unittest.TestCase):
+    def test_gallery_keeps_its_order_and_dimensions(self):
+        media = fetch_mod._reddit_media(REDDIT_GALLERY["data"][0])
+        self.assertEqual([m["url"] for m in media],
+                         ["https://i.redd.it/two.jpeg?width=99", "https://i.redd.it/one.jpeg"])
+        self.assertEqual((media[1]["width"], media[1]["height"]), (100, 200))
+
+    def test_plain_image_post(self):
+        media = fetch_mod._reddit_media(REDDIT_POST["data"][0])
+        self.assertEqual([m["url"] for m in media], ["https://i.redd.it/aaa.jpeg"])
+
+    def test_duplicates_are_collapsed(self):
+        post = {"url": "https://i.redd.it/aaa.jpeg",
+                "media_metadata": {"m": {"s": {"u": "https://i.redd.it/aaa.jpeg"}}}}
+        self.assertEqual(len(fetch_mod._reddit_media(post)), 1)
+
+    def test_video_fallback_url_is_media_too(self):
+        post = {"is_video": True, "url": "https://v.redd.it/xyz",
+                "media": {"reddit_video": {"fallback_url": "https://v.redd.it/xyz/DASH_720.mp4",
+                                           "width": 1280, "height": 720}}}
+        media = fetch_mod._reddit_media(post)
+        self.assertEqual(media[0]["type"], "video")
+        self.assertIn("DASH_720", media[0]["url"])
+
+    def test_preview_is_the_last_resort(self):
+        post = {"url": "https://example.com/article",
+                "preview": {"images": [{"source": {"url": "https://preview.redd.it/x.jpg?s=sig",
+                                                   "width": 10, "height": 20}}]}}
+        media = fetch_mod._reddit_media(post)
+        self.assertEqual(media[0]["url"], "https://preview.redd.it/x.jpg?s=sig")
+
+
+class RedditFetchTests(unittest.TestCase):
+    def setUp(self):
+        self.site = _Site()
+        self.site.json_routes = {
+            "/api/posts/ids": REDDIT_POST,
+            "/api/posts/search": REDDIT_LISTING,
+            "/api/comments/search": REDDIT_COMMENTS,
+        }
+        self._arctic = os.environ.get("ARCTIC_SHIFT_URL")
+        os.environ["ARCTIC_SHIFT_URL"] = self.site.base
+
+    def tearDown(self):
+        self.site.close()
+        if self._arctic is None:
+            os.environ.pop("ARCTIC_SHIFT_URL", None)
+        else:
+            os.environ["ARCTIC_SHIFT_URL"] = self._arctic
+
+    def test_post_renders_title_comments_and_media(self):
+        res = fetch_mod.fetch_reddit("https://www.reddit.com/r/pics/comments/abc123/x/", 10)
+        self.assertEqual(res["source"], "reddit:post")
+        self.assertIn("# A sunset & a cat", res["text"])          # entity decoded
+        self.assertIn("1234 points", res["text"])
+        self.assertIn("https://i.redd.it/aaa.jpeg", res["text"])
+        self.assertEqual([m["url"] for m in res["media"]], ["https://i.redd.it/aaa.jpeg"])
+
+    def test_comments_are_sorted_and_removed_ones_dropped(self):
+        res = fetch_mod.fetch_reddit("https://www.reddit.com/r/pics/comments/abc123/x/", 10)
+        body = res["text"]
+        self.assertLess(body.index("the best answer"), body.index("low score take"))
+        self.assertNotIn("[removed]", body)
+
+    def test_gallery_post_exposes_every_image(self):
+        self.site.json_routes["/api/posts/ids"] = REDDIT_GALLERY
+        res = fetch_mod.fetch_reddit("https://www.reddit.com/gallery/gal123", 10)
+        self.assertEqual(len(res["media"]), 2)
+        self.assertIn("## Media", res["text"])
+
+    def test_listing_renders_a_list(self):
+        res = fetch_mod.fetch_reddit("https://www.reddit.com/r/ffmpeg/", 10)
+        self.assertEqual(res["source"], "reddit:listing")
+        self.assertIn("# r/ffmpeg", res["text"])
+        self.assertIn("ffmpeg.org down?", res["text"])
+        self.assertTrue(res["media"], "listing images should be collected too")
+
+    def test_empty_archive_is_an_error_so_the_chain_moves_on(self):
+        self.site.json_routes["/api/posts/ids"] = {"data": []}
+        with self.assertRaises(RuntimeError):
+            fetch_mod.fetch_reddit("https://www.reddit.com/r/pics/comments/dead00/x/", 10)
+
+    def test_a_reddit_url_takes_the_reddit_stage_first(self):
+        res = fetch_mod.fetch("https://www.reddit.com/r/pics/comments/abc123/x/", timeout=10,
+                              deadline=20, ttl=0, use_reader=False, use_vendor=False,
+                              use_archive=False, retries=0)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["source"], "reddit:post")
+        self.assertEqual(len(res["media"]), 1)
+
+
+class XFetchTests(unittest.TestCase):
+    def setUp(self):
+        self.site = _Site()
+        self.site.json_routes = {"/status/": X_TWEET}
+        self._fx = os.environ.get("FXTWITTER_URL")
+        os.environ["FXTWITTER_URL"] = self.site.base
+
+    def tearDown(self):
+        self.site.close()
+        if self._fx is None:
+            os.environ.pop("FXTWITTER_URL", None)
+        else:
+            os.environ["FXTWITTER_URL"] = self._fx
+
+    def test_tweet_renders_text_photos_and_video(self):
+        res = fetch_mod.fetch_x("https://x.com/someone/status/2101", 10)
+        self.assertEqual(res["source"], "x:post")
+        self.assertIn("Someone (@someone)", res["text"])
+        self.assertIn("look at this", res["text"])
+        kinds = [m["type"] for m in res["media"]]
+        self.assertEqual(kinds, ["image", "image", "video"])
+        self.assertIn("name=orig", res["media"][0]["url"])
+
+    def test_video_duration_is_reported(self):
+        res = fetch_mod.fetch_x("https://x.com/someone/status/2101", 10)
+        self.assertIn("65s", res["text"])
+
+    def test_quoted_tweet_is_summarised(self):
+        res = fetch_mod.fetch_x("https://x.com/someone/status/2101", 10)
+        self.assertIn("@quoted", res["text"])
+        self.assertIn("the original", res["text"])
+
+    def test_api_error_code_becomes_a_stage_error(self):
+        self.site.json_routes["/status/"] = {"code": 404, "message": "NOT_FOUND"}
+        with self.assertRaises(RuntimeError):
+            fetch_mod.fetch_x("https://x.com/someone/status/404", 10)
+
+    def test_an_x_url_takes_the_x_stage_first(self):
+        res = fetch_mod.fetch("https://x.com/someone/status/2101", timeout=10, deadline=20,
+                              ttl=0, use_reader=False, use_vendor=False, use_archive=False, retries=0)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["source"], "x:post")
+        self.assertEqual(len(res["media"]), 3)
+
+
+class MediaDownloadTests(unittest.TestCase):
+    def setUp(self):
+        self.site = _Site()
+
+    def tearDown(self):
+        self.site.close()
+
+    def test_files_are_written_with_sane_names(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            items = [{"url": f"{self.site.base}/media/A.jpg?name=orig", "type": "image"},
+                     {"url": f"{self.site.base}/media/B.mp4", "type": "video"}]
+            files = fetch_mod.download_media(items, d)
+            self.assertEqual(len(files), 2)
+            names = sorted(os.path.basename(f) for f in files)
+            self.assertEqual(names[0][:2], "01")
+            self.assertTrue(names[0].endswith(".jpg"))
+            for f in files:
+                self.assertTrue(os.path.getsize(f) > 100)
+
+    def test_limit_and_bad_urls_are_respected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            items = [{"url": "not-a-url"}] + [{"url": f"{self.site.base}/media/A.jpg"}] * 3
+            files = fetch_mod.download_media(items, d, limit=2)
+            self.assertEqual(len(files), 2)
 
 
 class UnitTests(unittest.TestCase):

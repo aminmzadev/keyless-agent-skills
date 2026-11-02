@@ -3,7 +3,7 @@
 Seven skills, no API keys, no accounts, no sign-ups. One zip, one guide, ~4,000 lines
 of Python that assume nothing about your machine beyond `python3`.
 
-- **Version:** 1.5.0 · built 2026-11-02
+- **Version:** 1.6.0 · built 2026-11-02
 - **Bundle:** `agent-skills-pack-vX.Y.Z.zip` from the latest release (self-contained, nothing to download at install time)
 - **Works with:** any agent that can run shell commands — pi, Claude Code, Codex, Cursor,
   aider, a cron job, or you at a terminal.
@@ -174,6 +174,12 @@ python3 fetch-page/scripts/fetch.py https://example.com --text
 python3 fetch-page/scripts/fetch.py url1 url2 --out pages/ --json
 python3 fetch-page/scripts/fetch.py https://www.g2.com/products/ffmpeg/reviews --deadline 25
 python3 fetch-page/scripts/fetch.py https://stackoverflow.com/questions/1976007 --text  # via the SE API
+
+# the two sites every scraper gives up on, with their pictures
+python3 fetch-page/scripts/fetch.py https://www.reddit.com/r/pics/comments/1xm0xm3/ --media pics/
+python3 fetch-page/scripts/fetch.py https://www.reddit.com/r/ffmpeg/                     # a subreddit listing
+python3 fetch-page/scripts/fetch.py https://x.com/Complex/status/2101466653175464354 --media x/
+
 
 # question -> cited report, optionally following the links inside the sources
 python3 deep-research/scripts/research.py "why does ffmpeg zoompan jitter" -o jitter.md --depth 2

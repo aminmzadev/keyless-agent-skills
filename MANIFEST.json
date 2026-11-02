@@ -1,6 +1,6 @@
 {
  "pack": "agent-media-skills",
- "version": "1.5.0",
+ "version": "1.6.0",
  "date": "2026-11-02",
  "requires_credentials": false,
  "skills": [
@@ -286,24 +286,40 @@
     "--max-chars N",
     "--links",
     "--text",
-    "--no-cache"
+    "--no-cache",
+    "--deadline SECONDS",
+    "--no-vendor",
+    "--no-rewrite",
+    "--media DIR"
    ],
    "use_when": [
     "you have a specific URL and need its readable content",
     "a plain request returned a cookie wall, a JS shell or a 403",
     "you need a PDF as text",
-    "several pages must be read in parallel and saved to disk"
+    "several pages must be read in parallel and saved to disk",
+  "you need a reddit post or subreddit with its images, or an x post with its photos"
    ],
    "not_for": [
     "finding URLs (use web-search)",
     "authenticated or paywalled pages"
    ],
    "fallback_chain": [
+    "reddit:post / reddit:listing (before direct)",
+    "x:post (before direct)",
+    "rewrite:gh-raw (before direct)",
+    "rewrite:stackexchange (before direct)",
     "direct",
     "reader:jina",
     "reader:allorigins",
     "reader:cors.lol",
     "reader:codetabs",
+    "vendor:firecrawl",
+    "vendor:exa",
+    "rewrite:wikipedia-summary",
+    "rewrite:nitter",
+    "rewrite:scribe",
+    "rewrite:youtube-oembed",
+    "rewrite:arxiv-pdf",
     "wayback"
    ],
    "keywords": [

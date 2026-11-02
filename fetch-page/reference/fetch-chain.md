@@ -14,6 +14,9 @@ than failing. The rest run after the relays have had their turn.
 
 | Runs | URL | Twin |
 |---|---|---|
+| before | `reddit.com/r/*/comments/<id>`, `redd.it/<id>`, `/gallery/<id>` | `arctic-shift.photon-reddit.com/api/posts/ids` + `/api/comments/search` |
+| before | `reddit.com/r/<sub>`, `/user/<name>` | `arctic-shift.photon-reddit.com/api/posts/search` |
+| before | `x.com`/`twitter.com/…/status/<id>` | `api.fxtwitter.com/status/<id>` |
 | before | `github.com/…/blob/…` | `raw.githubusercontent.com/…` |
 | before | `stackoverflow.com/questions/<id>`, `*.stackexchange.com`, superuser, serverfault, askubuntu | `api.stackexchange.com/2.3/questions/<id>?filter=withbody` |
 | after relays | `en.wikipedia.org/wiki/X` | `…/api/rest_v1/page/summary/X` (the lede, labelled as a summary) |
@@ -30,7 +33,46 @@ every other stage returned a Cloudflare 403 or a signup wall.
 Not included, because they measured dead on this network: reddit → `old.reddit`
 / `.json` (403 both) and `archive.ph` (429).
 
-`source` values: `rewrite:gh-raw`, `rewrite:stackexchange`, `rewrite:wikipedia-summary`,
+### Reddit and X in detail
+
+Both hosts are closed to anonymous clients and both have a keyless JSON service
+that is not. The stages live in `fetch.py` as `fetch_reddit()` and `fetch_x()`,
+not as single-URL rewrites, because each needs more than one request.
+
+**Reddit.** `arctic-shift.photon-reddit.com` returns the full post object —
+`title`, `selftext`, `score`, `created_utc`, `is_gallery`, `gallery_data`,
+`media_metadata`, `preview` — plus comments via `/api/comments/search?link_id=`.
+Media collection order: `media_metadata` in `gallery_data` order (this is what
+carries the signed `preview.redd.it` URLs), then `url_overridden_by_dest` when it
+is an image host, then `reddit_video.fallback_url`, then `preview.images[0]`.
+Duplicates collapse on the URL without its query string. A post with no media is
+still a post; a post the archive does not have raises and the chain moves on.
+
+Listings use `/api/posts/search?subreddit=<sub>&limit=25&sort=desc` (or
+`author=` for user pages); `sort=asc` maps to `/new`, `after`/`before` exist for
+paging. There is no global full-text search: `query=`, `title=` and `selftext=`
+all require a subreddit or author scope, which is why no reddit provider was added
+to `web-search`.
+
+Measured: post 0.3–2.0 s, listing (25 posts + images) ~4 s, images 130–860 kB
+straight off `i.redd.it`.
+
+**X.** `api.fxtwitter.com/status/<id>` — id only, no handle needed, ids as short
+as `20` work. Media arrays give `photos` (pbs.twimg.com, `?name=orig` = full
+size), `videos` and `gifs` (video.twimg.com mp4, with duration), plus `quote`.
+`video.twimg.com` honours range requests, so partial downloads work.
+
+Dead on this network on 2026-11-02, do not retry as a strategy: `old.reddit.com`,
+`*.reddit.com/*.json`, reddit `/s/` share links (all 403); eight redlib mirrors
+(429 / 503 / Cloudflare / redirect loops); `api.pullpush.io` (522); nitter.net and
+the other nitter mirrors (Cloudflare challenge with a 200 status — which is why
+the wall check exists); `api.vxtwitter.com` (Cloudflare); the syndication
+endpoint (`{}` without a token); `publish.twitter.com/oembed` (301).
+`i.imgur.com` now 302s to `removed.png` for most ids, so imgur is followed, not
+trusted.
+
+`source` values: `reddit:post`, `reddit:listing`, `x:post`,
+`rewrite:gh-raw`, `rewrite:stackexchange`, `rewrite:wikipedia-summary`,
 `rewrite:nitter`, `rewrite:nitter-privacydev`, `rewrite:xcancel`, `rewrite:scribe`,
 `rewrite:youtube-oembed`, `rewrite:arxiv-pdf`.
 

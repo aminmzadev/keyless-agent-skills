@@ -475,7 +475,7 @@ def fetch_direct(url, timeout, keep_links):
 # (a github blob is the same file with a UI around it; a StackOverflow question
 # is the same Q&A with a Cloudflare wall in front of it), so they run *before*
 # the direct stage. The rest run after the relays have failed.
-REWRITE_PRIORITY = ("gh-raw", "stackexchange")
+REWRITE_PRIORITY = ("reddit", "x-post", "gh-raw", "stackexchange")
 SE_SITES = ("stackoverflow.com", "superuser.com", "serverfault.com", "askubuntu.com")
 
 
@@ -489,6 +489,11 @@ def rewrite_candidates(url):
     host = host[4:] if host.startswith("www.") else host
     path, query = p.path or "/", p.query
     out = []
+
+    if reddit_target(url):
+        out.append(("reddit", url, "reddit"))
+    if x_target(url):
+        out.append(("x-post", url, "x"))
 
     if host == "github.com" and "/blob/" in path:
         out.append(("gh-raw", "https://raw.githubusercontent.com" + path.replace("/blob/", "/", 1), "raw"))
@@ -623,6 +628,10 @@ _JSON_RENDERERS = {"stackexchange": _render_stackexchange,
 
 def fetch_rewrite(name, target, kind, timeout, keep_links=False):
     """Fetch a machine-readable twin of *target* and label it rewrite:<name>."""
+    if kind == "reddit":
+        return fetch_reddit(target, timeout, keep_links)
+    if kind == "x":
+        return fetch_x(target, timeout, keep_links)
     t0 = time.time()
     if kind == "html":
         res = dict(fetch_direct(target, timeout, keep_links))
@@ -857,6 +866,324 @@ def fetch_exa(url, timeout, keep_links=False):
             "elapsed": round(time.time() - t0, 2)}
 
 
+# ------------------------------------------------- reddit, without reddit.com
+# reddit.com 403s every plain client from a datacenter IP (old.reddit 403, .json
+# 403, /s/ share links 403) and every redlib mirror is behind Cloudflare or rate
+# limited. The archive API is not: arctic-shift serves full post and comment
+# objects, keyless, and includes the gallery metadata that carries the image
+# URLs. Images themselves live on i.redd.it, which answers plain HTTP fine.
+ARCTIC = "https://arctic-shift.photon-reddit.com"
+X_API = "https://api.fxtwitter.com"
+REDDIT_COMMENTS = 20
+
+
+def _arctic():
+    return os.environ.get("ARCTIC_SHIFT_URL", ARCTIC)
+
+
+def _x_api():
+    return os.environ.get("FXTWITTER_URL", X_API)
+
+
+def reddit_target(url):
+    """(kind, key, extra) for a reddit URL, or None. kind: "post" | "listing"."""
+    p = urllib.parse.urlparse(url)
+    host = (p.netloc or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    path = p.path or "/"
+    if host not in ("reddit.com", "old.reddit.com", "new.reddit.com", "np.reddit.com",
+                    "redd.it", "sh.reddit.com"):
+        if not host.endswith(".reddit.com"):
+            return None
+    m = re.match(r"^/([a-z0-9]{4,10})/?$", path, re.I)    # redd.it/<id>
+    if m and host == "redd.it":
+        return ("post", m.group(1), {})
+    m = re.search(r"/comments/([a-z0-9]{4,10})(?:/|$)", path, re.I)
+    if m:
+        return ("post", m.group(1).lower(), {})
+    m = re.search(r"/gallery/([a-z0-9]{4,10})", path, re.I)
+    if m:
+        return ("post", m.group(1).lower(), {})
+    if "/s/" in path:
+        return None                                        # share links 403 for everyone
+    m = re.match(r"^/r/([A-Za-z0-9_+]{2,50})(?:/(hot|new|top|rising|controversial))?/?$", path)
+    if m:
+        return ("listing", m.group(1), {"sort": "asc" if (m.group(2) or "") == "new" else "desc"})
+    m = re.match(r"^/(?:u|user)/([A-Za-z0-9_-]{3,30})/?$", path)
+    if m:
+        return ("listing", m.group(1), {"author": True})
+    return None
+
+
+def x_target(url):
+    """(user, status_id) for an x.com / twitter.com status URL, or None."""
+    p = urllib.parse.urlparse(url)
+    host = (p.netloc or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    if host not in ("x.com", "twitter.com", "mobile.twitter.com", "mobile.x.com", "t.co"):
+        return None
+    m = re.search(r"/status(?:es)?/(\d{1,25})", p.path or "")
+    if m:
+        return (None, m.group(1))
+    return None
+
+
+def _reddit_media(p):
+    """Every image/video URL a post carries, in gallery order, deduplicated."""
+    out, seen = [], set()
+
+    def add(u, kind="image", w=None, h=None):
+        if not u:
+            return
+        u = html_lib.unescape(u)
+        key = urllib.parse.urlsplit(u)._replace(query="").geturl() if "preview.redd.it" not in u else u
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({"url": u, "type": kind, "width": w, "height": h})
+
+    md = p.get("media_metadata") if isinstance(p.get("media_metadata"), dict) else {}
+    if md:
+        order = [i.get("media_id") for i in ((p.get("gallery_data") or {}).get("items") or [])]
+        for mid in [i for i in order if i in md] + [k for k in md if k not in order]:
+            m = md.get(mid) or {}
+            src = m.get("s") or {}
+            add(src.get("u") or src.get("gif"), "image", src.get("x"), src.get("y"))
+
+    url = p.get("url_overridden_by_dest") or p.get("url") or ""
+    if re.search(r"\.(?:jpe?g|png|gif|webp|avif)(?:\?|$)", url, re.I) or \
+            re.search(r"^https?://(i\.redd\.it|i\.imgur\.com|preview\.redd\.it)/", url):
+        add(url, "image")
+
+    rv = ((p.get("media") or {}).get("reddit_video") or {})
+    if p.get("is_video") and rv.get("fallback_url"):
+        add(rv.get("fallback_url"), "video", rv.get("width"), rv.get("height"))
+
+    if not out:
+        try:
+            src = p["preview"]["images"][0]["source"]
+            add(src.get("url"), "image", src.get("width"), src.get("height"))
+        except Exception:
+            pass
+    return out
+
+
+def _reddit_stamp(p):
+    try:
+        return datetime.fromtimestamp(float(p.get("created_utc") or 0), timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        return "?"
+
+
+def _render_reddit_post(post, comments, comments_total):
+    title = html_lib.unescape((post.get("title") or "").strip()) or "(no title)"
+    bits = [f"r/{post.get('subreddit') or '?'}", f"u/{post.get('author') or '[deleted]'}",
+            f"{post.get('score', 0)} points", f"{post.get('num_comments', 0)} comments",
+            _reddit_stamp(post)]
+    if post.get("link_flair_text"):
+        bits.insert(0, str(post["link_flair_text"]))
+    if post.get("over_18"):
+        bits.append("NSFW")
+    parts = [f"# {title}", "_" + " · ".join(bits) + "_"]
+
+    selftext = (post.get("selftext") or "").strip()
+    if selftext and selftext not in ("[removed]", "[deleted]"):
+        parts.append(selftext)
+    elif post.get("is_self") is False:
+        pass
+    elif selftext:
+        parts.append(f"_{selftext}_")
+
+    media = _reddit_media(post)
+    if media:
+        lines = ["## Media", ""]
+        for i, m in enumerate(media, 1):
+            dim = f" ({m['width']}×{m['height']})" if m.get("width") and m.get("height") else ""
+            lines.append(f"{i}. {m['type']}{dim}: {m['url']}")
+        parts.append("\n".join(lines))
+    elif post.get("url") and not post.get("is_self"):
+        parts.append(f"Link: {post['url']}")
+
+    if comments:
+        lines = [f"## Comments (top {len(comments)} of {comments_total or len(comments)})", ""]
+        for c in comments:
+            body = (c.get("body") or "").strip()
+            if not body:
+                continue
+            lines.append(f"**u/{c.get('author') or '[deleted]'}** · {c.get('score', 0)} points")
+            lines.append("")
+            lines.append(body)
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+        parts.append("\n".join(lines).rstrip("-\n "))
+    return title, "\n\n".join(p for p in parts if p)
+
+
+def fetch_reddit(url, timeout, keep_links=False):
+    """Stage 0 for reddit URLs: post or listing, with pictures, no reddit.com."""
+    tgt = reddit_target(url)
+    if not tgt:
+        raise RuntimeError("reddit: not a post, subreddit or user URL (share links /s/ are not resolvable)")
+    kind, key, extra = tgt
+    t0 = time.time()
+
+    if kind == "post":
+        status, raw, hdrs, final = _open(f"{_arctic()}/api/posts/ids?ids={key}", timeout)
+        data = (json.loads(raw.decode("utf-8", "replace")) or {}).get("data") or []
+        if not data:
+            raise RuntimeError(f"reddit: no post with id {key} in the archive")
+        post = data[0]
+        comments = []
+        try:
+            cstatus, craw, _, _ = _open(
+                f"{_arctic()}/api/comments/search?link_id={key}&limit={REDDIT_COMMENTS * 4}", timeout)
+            items = (json.loads(craw.decode("utf-8", "replace")) or {}).get("data") or []
+            items = [c for c in items if (c.get("body") or "").strip()
+                     and c.get("body") not in ("[removed]", "[deleted]")]
+            items.sort(key=lambda c: (c.get("score") or 0), reverse=True)
+            comments = items[:REDDIT_COMMENTS]
+        except Exception:
+            pass                      # a post without comments is still a post
+        title, text = _render_reddit_post(post, comments, post.get("num_comments"))
+        media = _reddit_media(post)
+        source = "reddit:post"
+    else:
+        q = {"limit": "25", "sort": extra.get("sort", "desc")}
+        if extra.get("author"):
+            q["author"] = key
+        else:
+            q["subreddit"] = key
+        status, raw, hdrs, final = _open(
+            f"{_arctic()}/api/posts/search?" + urllib.parse.urlencode(q), timeout)
+        posts = (json.loads(raw.decode("utf-8", "replace")) or {}).get("data") or []
+        if not posts:
+            raise RuntimeError(f"reddit: no posts for {key}")
+        head = f"r/{key}" if not extra.get("author") else f"u/{key}"
+        lines = [f"# {head}", f"_{len(posts)} posts from the archive, newest first_", ""]
+        media = []
+        for i, post in enumerate(posts, 1):
+            title = html_lib.unescape((post.get("title") or "(no title)").strip())
+            lines.append(f"{i}. **{title}** — u/{post.get('author') or '[deleted]'}, "
+                         f"{post.get('score', 0)} points, {post.get('num_comments', 0)} comments, "
+                         f"{_reddit_stamp(post)}")
+            lines.append(f"   https://www.reddit.com{post.get('permalink') or ''}")
+            m = _reddit_media(post)
+            media.extend(m[:3])
+            for item in m[:3]:
+                lines.append(f"   {item['type']}: {item['url']}")
+        text = "\n".join(lines)
+        title = head
+        source = "reddit:listing"
+
+    return {"title": title, "text": text,
+            "meta": {"content_type": "markdown", "forum": "reddit", "kind": kind},
+            "links": [], "source": source, "final_url": url,
+            "status": 200, "elapsed": round(time.time() - t0, 2), "media": media}
+
+
+# ------------------------------------------------------------ x, without x.com
+# x.com needs a logged-in session and its API needs a bearer token. The public
+# fixer APIs do not: fxtwitter returns the tweet as JSON, including every photo
+# (pbs.twimg.com) and video (video.twimg.com) URL at full resolution. Those CDNs
+# are public and answer plain HTTP.
+def _render_x_tweet(t):
+    a = t.get("author") or {}
+    name = a.get("name") or ""
+    handle = a.get("screen_name") or ""
+    bits = []
+    if t.get("created_at"):
+        bits.append(str(t["created_at"]).replace(" +0000", " UTC"))
+    for k, label in (("likes", "likes"), ("reposts", "reposts"), ("replies", "replies"),
+                     ("views", "views")):
+        if t.get(k):
+            bits.append(f"{t[k]} {label}")
+    parts = [f"# {name} (@{handle})".strip(), "_" + " · ".join(bits) + "_" if bits else "",
+             (t.get("text") or "").strip()]
+
+    media, lines = [], []
+    m = t.get("media") or {}
+    for ph in (m.get("photos") or []):
+        url = ph.get("url") or ""
+        media.append({"url": url, "type": "image", "width": ph.get("width"), "height": ph.get("height")})
+        lines.append(f"- image{_dim(ph)}: {url}")
+    for v in (m.get("videos") or []) + (m.get("gifs") or []):
+        url = v.get("url") or ""
+        kind = "gif" if v in (m.get("gifs") or []) else "video"
+        media.append({"url": url, "type": kind, "width": v.get("width"), "height": v.get("height"),
+                      "duration": v.get("duration")})
+        lines.append(f"- {kind}{_dim(v)}" + (f" {v['duration']:.0f}s" if v.get("duration") else "")
+                     + f": {url}")
+    if lines:
+        parts += ["## Media", "\n".join(lines)]
+
+    q = t.get("quote")
+    if isinstance(q, dict) and q.get("text"):
+        qa = q.get("author") or {}
+        parts += ["## Quoted", f"**@{qa.get('screen_name', '?')}**: {q['text'].strip()}"]
+    if t.get("possibly_sensitive"):
+        parts.insert(1, "_marked sensitive by the author_")
+    return " ".join(x for x in [name, f"@{handle}"] if x) or "tweet", "\n\n".join(p for p in parts if p), media
+
+
+def _dim(x):
+    if x.get("width") and x.get("height"):
+        return f" ({x['width']}×{x['height']})"
+    return ""
+
+
+def fetch_x(url, timeout, keep_links=False):
+    """Stage 0 for x.com/twitter.com status URLs: text, photos, videos."""
+    tgt = x_target(url)
+    if not tgt:
+        raise RuntimeError("x: only /status/<id> URLs are fetchable without a session")
+    _user, sid = tgt
+    t0 = time.time()
+    status, raw, hdrs, final = _open(f"{_x_api()}/status/{sid}", timeout)
+    payload = json.loads(raw.decode("utf-8", "replace")) or {}
+    if payload.get("code") not in (200, None) or not payload.get("tweet"):
+        raise RuntimeError(f"x: {payload.get('message') or 'no tweet ' + sid}")
+    title, text, media = _render_x_tweet(payload["tweet"])
+    return {"title": title, "text": text,
+            "meta": {"content_type": "markdown", "social": "x", "tweet_id": sid},
+            "links": [], "source": "x:post", "final_url": url,
+            "status": 200, "elapsed": round(time.time() - t0, 2), "media": media}
+
+
+def download_media(items, outdir, timeout=30, limit=25, max_bytes=40 * 1024 * 1024):
+    """Save photos and videos next to the markdown. Returns the paths written."""
+    import mimetypes
+    os.makedirs(outdir, exist_ok=True)
+    written = []
+    for it in (items or []):
+        if len(written) >= limit:
+            break
+        url = it.get("url") or ""
+        if not url.startswith("http"):
+            continue
+        path = urllib.parse.urlsplit(url).path
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".mp4", ".webm"):
+            ext = ".mp4" if it.get("type") == "video" else ".jpg"
+        name = f"{len(written) + 1:02d}-{os.path.basename(path)[:40] or 'media'}"
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+        if not name.lower().endswith(ext):
+            name += ext
+        dest = os.path.join(outdir, name)
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = r.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                continue
+            with open(dest, "wb") as fh:
+                fh.write(data)
+            written.append(dest)
+        except Exception:
+            continue
+    return written
+
+
 class StageTimeout(RuntimeError):
     """A stage ignored its own socket timeouts and had to be abandoned."""
 
@@ -936,6 +1263,7 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
     if hit:
         hit["text"] = (hit.get("text") or "")[:max_chars]
         hit["chars"] = len(hit["text"])       # a cached page must still honour max_chars
+        hit.setdefault("media", [])
         hit["cached"] = True
         return hit
 
@@ -986,6 +1314,7 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
                 res["ok"] = True
                 res["url"] = url
                 res["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                res.setdefault("media", [])
                 res["errors"] = errors
                 # the call succeeded, so the deadline did not cut *it*: record which
                 # stages were abandoned instead of pretending the answer is partial
@@ -1015,7 +1344,7 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
             time.sleep(min(0.8 * (attempt + 1), max(0.0, hard_end - time.monotonic())))
 
     return {"ok": False, "url": url, "title": "", "text": "", "chars": 0,
-            "source": None, "errors": errors, "links": [],
+            "source": None, "errors": errors, "links": [], "media": [],
             "deadline_exceeded": deadline_exceeded, "stages_cut": list(stages_cut)}
 
 
@@ -1038,6 +1367,9 @@ def main():
     ap = argparse.ArgumentParser(description="resilient URL -> markdown for agents")
     ap.add_argument("urls", nargs="+")
     ap.add_argument("--out", default=None, help="directory for .md files")
+    ap.add_argument("--media", default=None, metavar="DIR",
+                    help="download the post's pictures/videos into DIR "
+                         "(only reddit and x posts carry media)")
     ap.add_argument("--max-chars", type=int, default=20000)
     ap.add_argument("--timeout", type=int, default=25)
     ap.add_argument("--links", action="store_true")
@@ -1081,6 +1413,11 @@ def main():
             with open(p, "w", encoding="utf-8") as fh:
                 fh.write(to_markdown(r))
             r["file"] = p
+        if r.get("ok") and a.media and r.get("media"):
+            files = download_media(r["media"], a.media)
+            r["media_files"] = files
+            if not a.quiet and not a.json:
+                print(f"[media] {len(files)}/{len(r['media'])} saved to {a.media}")
 
     if a.json:
         print(json.dumps([{k: v for k, v in r.items() if k != "text"} for r in results],
@@ -1092,6 +1429,8 @@ def main():
                       f"{r['elapsed'] if not r.get('cached') else 0:.1f}s · {r['title'][:70]}")
                 if r.get("file"):
                     print(f"       -> {r['file']}")
+                if r.get("media"):
+                    print(f"       {len(r['media'])} media item(s)")
             else:
                 print(f"[fail] {r['url'][:90]}")
                 for e in r["errors"][-3:]:
