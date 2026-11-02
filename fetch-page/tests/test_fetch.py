@@ -763,11 +763,39 @@ class StdlibPdfTests(unittest.TestCase):
         # a real page's worth of text, not one line: the fallback only accepts a
         # result long enough to be an answer rather than a stray caption
         orig_which = fetch_mod.shutil.which
+        orig_pypdf = sys.modules.get("pypdf")
         fetch_mod.shutil.which = lambda name: None
+        sys.modules["pypdf"] = None                 # makes `import pypdf` raise ImportError
         try:
             txt = fetch_mod.pdf_to_text(self._mini_pdf(b"Hello PDF world " * 8))
         finally:
             fetch_mod.shutil.which = orig_which
+            if orig_pypdf is None:
+                sys.modules.pop("pypdf", None)
+            else:
+                sys.modules["pypdf"] = orig_pypdf
+        self.assertTrue(txt and "Hello PDF world" in txt, txt)
+
+    def test_a_broken_pypdf_does_not_hide_the_builtin_parser(self):
+        """CI installs pypdf; if it raises on a file, the next extractor must run."""
+        import types
+
+        class Boom:
+            def __init__(self, *a, **k):
+                raise RuntimeError("malformed xref")
+
+        orig_which = fetch_mod.shutil.which
+        orig_pypdf = sys.modules.get("pypdf")
+        fetch_mod.shutil.which = lambda name: None
+        sys.modules["pypdf"] = types.SimpleNamespace(PdfReader=Boom)
+        try:
+            txt = fetch_mod.pdf_to_text(self._mini_pdf(b"Hello PDF world " * 8))
+        finally:
+            fetch_mod.shutil.which = orig_which
+            if orig_pypdf is None:
+                sys.modules.pop("pypdf", None)
+            else:
+                sys.modules["pypdf"] = orig_pypdf
         self.assertTrue(txt and "Hello PDF world" in txt, txt)
 
 

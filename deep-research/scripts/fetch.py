@@ -400,6 +400,13 @@ def pdf_extract_stdlib(data, max_bytes=30 * 1024 * 1024):
 
 
 def pdf_to_text(raw):
+    """Each extractor is guarded on its own.
+
+    They used to share one try block, which meant a pypdf that *raised* (a
+    malformed file, a library quirk) took the built-in parser down with it and
+    the call returned None — the fallback only worked when pypdf was absent
+    entirely. CI caught it: the runner has pypdf installed, a dev box did not.
+    """
     tmp = None
     try:
         if shutil.which("pdftotext"):
@@ -411,20 +418,22 @@ def pdf_to_text(raw):
                                capture_output=True, text=True, timeout=120)
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout
-        try:
-            import pypdf
-            reader = pypdf.PdfReader(io.BytesIO(raw))
-            return "\n\n".join((p.extract_text() or "") for p in reader.pages)
-        except ImportError:
-            pass
-        txt = pdf_extract_stdlib(raw)          # no poppler, no pypdf, still text
-        if txt and len(txt.strip()) > 40:
-            return txt
     except Exception:
         pass
     finally:
         if tmp and os.path.exists(tmp):
             os.unlink(tmp)
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(raw))
+        txt = "\n\n".join((p.extract_text() or "") for p in reader.pages)
+        if txt.strip():
+            return txt
+    except Exception:
+        pass
+    txt = pdf_extract_stdlib(raw)              # no poppler, no pypdf, still text
+    if txt and len(txt.strip()) > 40:
+        return txt
     return None
 
 
