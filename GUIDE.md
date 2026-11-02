@@ -3,7 +3,7 @@
 Seven skills, no API keys, no accounts, no sign-ups. One zip, one guide, ~4,000 lines
 of Python that assume nothing about your machine beyond `python3`.
 
-- **Version:** 1.6.0 · built 2026-11-02
+- **Version:** 1.7.0 · built 2026-11-02
 - **Bundle:** `agent-skills-pack-vX.Y.Z.zip` from the latest release (self-contained, nothing to download at install time)
 - **Works with:** any agent that can run shell commands — pi, Claude Code, Codex, Cursor,
   aider, a cron job, or you at a terminal.

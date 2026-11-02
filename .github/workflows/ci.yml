@@ -1,6 +1,6 @@
 name: ci
 
-# Runs on every push and PR: the pack's own 46-test suite, on three Pythons,
+# Runs on every push and PR: the pack's own suite (unit + integration + fuzz), on three Pythons,
 # with ffmpeg installed so the video tests actually run.
 on:
   push:

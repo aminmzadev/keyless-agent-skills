@@ -82,8 +82,10 @@ def main():
         # the scripts are POSIX python3 + ffmpeg; Windows needs WSL or a bash layer,
         # so say so instead of shipping something that half-works there
         "os": ["linux", "darwin"],
-        "files": ["skills", "GUIDE.md", "README.md", "MANIFEST.json", "install.sh",
-                  "LICENSE", "NOTICE", "DISCLOSURE"],
+        # .claude-plugin must be listed explicitly: npm keeps a whitelist exact,
+        # and without it the generated Claude Code marketplace never ships
+        "files": ["skills", ".claude-plugin", "GUIDE.md", "README.md", "MANIFEST.json",
+                  "install.sh", "LICENSE", "NOTICE", "DISCLOSURE"],
         # pi reads `pi.skills`; `skills` is what `npx skills experimental_sync` looks at
         "pi": {"skills": "./skills"},
         "skills": ["./skills"],
