@@ -32,6 +32,7 @@ Exit codes: 0 at least one page fetched · 2 all failed
 """
 import argparse
 import gzip
+import html as html_lib
 import hashlib
 import io
 import json
@@ -45,6 +46,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -211,6 +213,196 @@ def _open(url, timeout, headers=None):
         return r.status, raw, dict(r.headers), r.geturl()
 
 
+# ------------------------------------------------------- PDF, without a dependency
+# pdftotext needs poppler, pypdf needs pip. On a bare Termux or a slim container
+# both are missing, and the old chain fell straight through to a relay that is
+# often blocked. This is a third option that needs nothing: inflate the content
+# streams, read the text operators, and cope with the two things that usually
+# turn PDF text into garbage — TeX ligature glyphs and subset-font encodings.
+_PDF_ESC = {b"n": b"\n", b"r": b"\r", b"t": b"\t", b"b": b"\b", b"f": b"\f",
+            b"(": b"(", b")": b")", b"\\": b"\\"}
+
+_GLYPHS = {
+    "fi": "fi", "fl": "fl", "ff": "ff", "ffi": "ffi", "ffl": "ffl",
+    "quoteright": "\u2019", "quoteleft": "\u2018", "quotedblleft": "\u201c",
+    "quotedblright": "\u201d", "endash": "\u2013", "emdash": "\u2014",
+    "bullet": "\u2022", "dotlessi": "\u0131", "hyphen": "-", "space": " ",
+    "ellipsis": "\u2026", "section": "\u00a7", "minus": "\u2212",
+    "multiply": "\u00d7", "degree": "\u00b0", "quotesingle": "'",
+    "Lslash": "\u0141", "lslash": "\u0142", "OE": "\u0152", "oe": "\u0153",
+    "AE": "\u00c6", "ae": "\u00e6", "Oslash": "\u00d8", "oslash": "\u00f8",
+    "germandbls": "\u00df", "sterling": "\u00a3", "Euro": "\u20ac",
+    "trademark": "\u2122", "registered": "\u00ae", "copyright": "\u00a9",
+}
+# LaTeX's T1/OT1 layout puts ff/fi/fl/ffi/ffl in the control range, where ASCII
+# has nothing printable. Without this map "efficient" comes out as "e\x0ecient".
+_DEFAULT_CTRL = {0x0b: "ff", 0x0c: "fi", 0x0d: "fl", 0x0e: "ffi", 0x0f: "ffl"}
+
+_PDF_TOKEN = re.compile(rb"\((?:\\.|[^\\)])*\)|\[(?:\((?:\\.|[^\\)])*\)|[^\]])*\]"
+                        rb"|<[0-9A-Fa-f\s]*>|-?\d+\.?\d*|[A-Za-z*'\"]{1,3}|BT|ET", re.S)
+
+
+def _pdf_unescape(lit):
+    out = bytearray()
+    i = 0
+    while i < len(lit):
+        c = lit[i:i + 1]
+        if c == b"\\" and i + 1 < len(lit):
+            n = lit[i + 1:i + 2]
+            if n in _PDF_ESC:
+                out += _PDF_ESC[n]
+                i += 2
+                continue
+            if n.isdigit():
+                m = re.match(rb"[0-7]{1,3}", lit[i + 1:i + 4])
+                if m:
+                    out.append(int(m.group(0), 8) & 0xFF)
+                    i += 1 + len(m.group(0))
+                    continue
+            if n in (b"\n", b"\r"):
+                i += 2
+                continue
+            i += 1
+            continue
+        out += c
+        i += 1
+    return bytes(out)
+
+
+def _pdf_ctrl_map(data, streams):
+    """Code points < 32 that a /Differences array maps to real glyphs."""
+    cmap = dict(_DEFAULT_CTRL)
+    for src in [data] + [x for x in streams if b"/Differences" in x]:
+        for m in re.finditer(rb"/Differences\s*\[(.*?)\]", src, re.S):
+            code = 0
+            for tok in re.findall(rb"(\d+)|/([A-Za-z0-9.]+)", m.group(1)):
+                if tok[0]:
+                    code = int(tok[0])
+                    continue
+                name = tok[1].decode("latin-1")
+                if code < 32:
+                    ch = _GLYPHS.get(name)
+                    if ch is None and len(name) == 1:
+                        ch = name
+                    if ch is None and re.fullmatch(r"uni[0-9A-Fa-f]{4}", name):
+                        ch = chr(int(name[3:], 16))
+                    if ch:
+                        cmap[code] = ch
+                code += 1
+    return cmap
+
+
+def _pdf_decode_string(raw, cmap=None):
+    if raw[:2] in (b"\xfe\xff", b"\xff\xfe"):
+        try:
+            return raw.decode("utf-16", "ignore")
+        except Exception:
+            return ""
+    cmap = cmap or _DEFAULT_CTRL
+    txt = "".join(cmap.get(b, chr(b)) if b < 32 else chr(b) for b in raw)
+    # mostly unprintable means these are glyph ids from a CID font, not text
+    if txt and sum(1 for ch in txt if ch.isprintable() or ch in "\n\t") / len(txt) < 0.7:
+        return ""
+    return txt
+
+
+def pdf_extract_stdlib(data, max_bytes=30 * 1024 * 1024):
+    """Best-effort text from PDF content streams. Handles FlateDecode, not CID fonts."""
+    decoded = []
+    for m in re.finditer(rb"(?<!end)stream\r?\n(.*?)\s*endstream", data[:max_bytes], re.S):
+        raw = m.group(1)
+        head = data[max(0, m.start() - 400):m.start()]
+        if b"/FlateDecode" in head or raw[:1] in (b"x", b"\x78"):
+            try:
+                raw = zlib.decompress(raw)
+            except zlib.error:
+                try:
+                    raw = zlib.decompressobj().decompress(raw)
+                except zlib.error:
+                    continue
+        elif re.search(rb"/(?:DCTDecode|JPXDecode|CCITTFaxDecode|LZWDecode|ASCII85Decode"
+                       rb"|RunLengthDecode|JBIG2Decode)", head):
+            continue
+        decoded.append(raw)
+    cmap = _pdf_ctrl_map(data, decoded)
+    texts = []
+    for raw in decoded:
+        if b"BT" not in raw or b"ET" not in raw:
+            continue
+        for block in re.findall(rb"BT(.*?)ET", raw, re.S):
+            line, stack, last_y = [], [], None
+            for tok in _PDF_TOKEN.finditer(block):
+                t = tok.group(0)
+                if t.startswith(b"(") or t.startswith(b"[") or t.startswith(b"<"):
+                    stack.append(t)
+                    continue
+                if t in (b"Tj", b"'", b'"'):
+                    if stack:
+                        lit = stack[-1]
+                        if lit.startswith(b"("):
+                            line.append(_pdf_decode_string(_pdf_unescape(lit[1:-1]), cmap))
+                        elif lit.startswith(b"<"):
+                            try:
+                                line.append(_pdf_decode_string(
+                                    bytes.fromhex(re.sub(rb"\s", b"", lit[1:-1]).decode()), cmap))
+                            except ValueError:
+                                pass
+                    if t != b"Tj":
+                        line.append("\n")
+                    stack = []
+                elif t == b"TJ":
+                    if stack and stack[-1].startswith(b"["):
+                        for part in re.finditer(rb"\((?:\\.|[^\\)])*\)|(-?\d+\.?\d*)",
+                                                stack[-1], re.S):
+                            if part.group(1) is not None:
+                                try:
+                                    if float(part.group(1)) < -200:   # big kern = word gap
+                                        line.append(" ")
+                                except ValueError:
+                                    pass
+                            else:
+                                line.append(_pdf_decode_string(
+                                    _pdf_unescape(part.group(0)[1:-1]), cmap))
+                    stack = []
+                elif t in (b"T*", b"Td", b"TD", b"Tm"):
+                    if t == b"T*":
+                        line.append("\n")
+                    elif t in (b"Td", b"TD") and len(stack) >= 2:
+                        try:
+                            dy = float(stack[-1])
+                            if abs(dy) > 6:
+                                line.append("\n")
+                            elif float(stack[-2]) > 2 or abs(dy) > 0.5:
+                                line.append(" ")
+                        except ValueError:
+                            pass
+                    elif t == b"Tm" and len(stack) >= 6:
+                        try:
+                            y = float(stack[-1])
+                            if last_y is not None and abs(y - last_y) > 6:
+                                line.append("\n")
+                            elif last_y is not None:
+                                line.append(" ")
+                            last_y = y
+                        except ValueError:
+                            pass
+                    stack = []
+                elif re.fullmatch(rb"-?\d+\.?\d*", t):
+                    stack.append(t)
+                else:
+                    stack = []
+            chunk = "".join(line)
+            if chunk.strip():
+                texts.append(chunk)
+    out = "\n".join(texts)
+    out = re.sub(r"[ \t]+", " ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    for a, b in (("\ufb00", "ff"), ("\ufb01", "fi"), ("\ufb02", "fl"),
+                 ("\ufb03", "ffi"), ("\ufb04", "ffl")):
+        out = out.replace(a, b)
+    return out.strip()
+
+
 def pdf_to_text(raw):
     tmp = None
     try:
@@ -229,6 +421,9 @@ def pdf_to_text(raw):
             return "\n\n".join((p.extract_text() or "") for p in reader.pages)
         except ImportError:
             pass
+        txt = pdf_extract_stdlib(raw)          # no poppler, no pypdf, still text
+        if txt and len(txt.strip()) > 40:
+            return txt
     except Exception:
         pass
     finally:
@@ -267,6 +462,184 @@ def fetch_direct(url, timeout, keep_links):
     return {"title": title or url, "text": body, "meta": meta, "links": links,
             "source": "direct", "final_url": final, "status": status,
             "elapsed": round(time.time() - t0, 2)}
+
+
+# ------------------------------------------------------------------ rewrites
+# Some URLs have a machine-readable twin: one request, no navigation sandwich,
+# no bot wall. Two of these are unconditionally better than the page itself
+# (a github blob is the same file with a UI around it; a StackOverflow question
+# is the same Q&A with a Cloudflare wall in front of it), so they run *before*
+# the direct stage. The rest run after the relays have failed.
+REWRITE_PRIORITY = ("gh-raw", "stackexchange")
+SE_SITES = ("stackoverflow.com", "superuser.com", "serverfault.com", "askubuntu.com")
+
+
+def rewrite_candidates(url):
+    """[(name, target, kind)] for this URL; kind is "raw" | "json" | "html".
+
+    Pure function — no network, so the mapping is tested directly.
+    """
+    p = urllib.parse.urlparse(url)
+    host = (p.netloc or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    path, query = p.path or "/", p.query
+    out = []
+
+    if host == "github.com" and "/blob/" in path:
+        out.append(("gh-raw", "https://raw.githubusercontent.com" + path.replace("/blob/", "/", 1), "raw"))
+
+    se = host in SE_SITES or host.endswith(".stackexchange.com")
+    if se:
+        m = re.match(r"/questions/(\d+)", path)
+        if m:
+            site = ("stackoverflow" if "stackoverflow" in host
+                    else host.split(".")[0])
+            out.append(("stackexchange",
+                        f"https://api.stackexchange.com/2.3/questions/{m.group(1)}"
+                        f"?site={site}&filter=withbody", "json"))
+
+    if host.endswith("wikipedia.org") and path.startswith("/wiki/"):
+        lang = host.split(".")[0]
+        title = urllib.parse.quote(path[len("/wiki/"):])
+        out.append(("wikipedia-summary",
+                    f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title}", "json"))
+
+    if host in ("youtube.com", "m.youtube.com") and path.rstrip("/") == "/watch":
+        vid = urllib.parse.parse_qs(query).get("v", [None])[0]
+        if vid:
+            out.append(("youtube-oembed",
+                        "https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=" + vid,
+                        "json"))
+    elif host == "youtu.be" and path.strip("/"):
+        out.append(("youtube-oembed",
+                    "https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v="
+                    + path.strip("/"), "json"))
+
+    if host == "medium.com" or host.endswith(".medium.com"):
+        out.append(("scribe", "https://scribe.rip" + path, "html"))
+
+    if host in ("x.com", "twitter.com", "mobile.twitter.com"):
+        for n, mirror in (("nitter", "nitter.net"),
+                          ("nitter-privacydev", "nitter.privacydev.net"),
+                          ("xcancel", "xcancel.com")):
+            out.append((n, f"https://{mirror}{path}", "html"))
+
+    if host == "arxiv.org" and path.startswith("/abs/"):
+        out.append(("arxiv-pdf", "https://arxiv.org/pdf/" + path[len("/abs/"):], "html"))
+    return out
+
+
+def order_rewrites(cands):
+    """(before, after) — priority rewrites first, the rest after the relays."""
+    before = [c for c in cands if c[0] in REWRITE_PRIORITY]
+    after = [c for c in cands if c[0] not in REWRITE_PRIORITY]
+    return before, after
+
+
+# ------------------------------------------------------------------ wall check
+# A relay answering 200 with a bot wall or a signup gate is not an answer. This
+# is how fetch.py once returned ok:true with 20,000 characters of StackOverflow's
+# signup page: every stage "succeeded" and none of them had read the article.
+WALL_CHALLENGE = ("just a moment", "checking your browser", "verifying your browser",
+                  "attention required", "unusual traffic", "are you a robot",
+                  "verify you are human", "enable javascript and cookies",
+                  "please enable javascript", "access denied", "cf-error-details",
+                  "warning: target url returned error")
+WALL_SIGNUP = ("sign up with google", "sign up with github", "continue with google",
+               "join stack overflow", "log in to continue", "sign in to continue",
+               "subscribe to continue", "for subscribers only", "become a member to read",
+               "create a free account", "create your account to continue")
+
+
+def wall_reason(text):
+    """Name the wall this body is, or None if it looks like a page."""
+    head = (text or "")[:700].lower()
+    body = (text or "")[:3000].lower()
+    for m in WALL_SIGNUP:
+        if m in head:
+            return m
+    for m in WALL_CHALLENGE:
+        if m in body:
+            return m
+    return None
+
+
+# ----------------------------------------------------------- rewrites, fetching
+def _render_stackexchange(js):
+    items = (js or {}).get("items") or []
+    if not items:
+        raise RuntimeError("stackexchange: no items")
+    q = items[0]
+
+    def frag(h):
+        return (html_to_markdown(h or "", False, "")[1] or "").strip()
+
+    title = html_lib.unescape(re.sub(r"<[^>]+>", "", q.get("title") or "")).strip() or "question"
+    bits = [f"{q.get('score', 0)} votes"]
+    if q.get("answer_count") is not None:
+        bits.append(f"{q['answer_count']} answers")
+    if q.get("is_answered"):
+        bits.append("has an accepted answer")
+    parts = [f"# {title}", f"_{' · '.join(bits)}_ · {q.get('link', '')}", frag(q.get("body"))]
+    answers = [x for x in items if x.get("answer_id")][:3]
+    for i, a in enumerate(answers, 1):
+        head = f"## Answer {i}"
+        if a.get("is_accepted"):
+            head += " (accepted)"
+        owner = (a.get("owner") or {}).get("display_name") or ""
+        head += f" — {a.get('score', 0)} votes" + (f", {owner}" if owner else "")
+        parts += [head, frag(a.get("body"))]
+    return title, "\n\n".join(p for p in parts if p), {"content_type": "markdown"}
+
+
+def _render_wikipedia(js):
+    title = (js or {}).get("title") or ""
+    extract = ((js or {}).get("extract") or "").strip()
+    if not extract:
+        raise RuntimeError("wikipedia: no extract")
+    body = (f"# {title}\n\n{extract}\n\n---\n\n"
+            "_Wikipedia REST summary — the lede only; fetch the article page for the full text._")
+    return title or "summary", body, {"content_type": "markdown", "summary": True}
+
+
+def _render_youtube(js):
+    js = js or {}
+    title = js.get("title") or ""
+    author = js.get("author_name") or ""
+    body = (f"# {title}\n\n" + (f"by {author}\n\n" if author else "")
+            + "_YouTube oEmbed metadata — the title and channel, not the video._")
+    return title or "video", body, {"content_type": "markdown", "summary": True}
+
+
+_JSON_RENDERERS = {"stackexchange": _render_stackexchange,
+                   "wikipedia-summary": _render_wikipedia,
+                   "youtube-oembed": _render_youtube}
+
+
+def fetch_rewrite(name, target, kind, timeout, keep_links=False):
+    """Fetch a machine-readable twin of *target* and label it rewrite:<name>."""
+    t0 = time.time()
+    if kind == "html":
+        res = dict(fetch_direct(target, timeout, keep_links))
+    else:
+        status, raw, hdrs, final = _open(target, timeout)
+        body = raw.decode("utf-8", "replace")
+        if kind == "raw":
+            text = body
+            title = os.path.basename(urllib.parse.urlparse(target).path) or target
+            meta = {"content_type": "text"}
+        else:
+            render = _JSON_RENDERERS.get(name)
+            if render is None:
+                raise RuntimeError(f"rewrite:{name}: no renderer")
+            title, text, meta = render(json.loads(body))
+        res = {"title": title, "text": text, "meta": meta, "links": [],
+               "final_url": target, "status": status}
+    res["source"] = f"rewrite:{name}"
+    res["elapsed"] = round(time.time() - t0, 2)
+    if not (res.get("text") or "").strip():
+        raise RuntimeError(f"rewrite:{name}: empty")
+    return res
 
 
 _JINA_STATE = {"dead": False, "why": ""}
@@ -549,7 +922,7 @@ def cache_put(url, data):
 # -------------------------------------------------------------------- the thing
 def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
           use_reader=True, use_archive=True, retries=1, deadline=45.0,
-          use_vendor=True):
+          use_vendor=True, use_rewrite=True):
     hit = cache_get(url, ttl)
     # a cached entry only remembers links if it was collected with keep_links;
     # a caller that needs them (research --follow) must not inherit a linkless hit
@@ -570,9 +943,16 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
     # relays can eat the entire budget and the vendor stage — the one that
     # actually reaches hostile pages — never runs.
     total = max(1.0, float(deadline))
-    chain = [("direct", lambda t: fetch_direct(url, t, keep_links), 0.35)]
+    before, after = order_rewrites(rewrite_candidates(url) if use_rewrite else [])
+    chain = [(f"rewrite:{n}",
+              (lambda t, nm=n, tgt=tgt, kd=k: fetch_rewrite(nm, tgt, kd, t, keep_links)), 0.35)
+             for n, tgt, k in before]
+    chain.append(("direct", lambda t: fetch_direct(url, t, keep_links), 0.35))
     if use_reader:
         chain.append(("reader", lambda t: fetch_reader(url, t, keep_links), 0.40))
+    chain += [(f"rewrite:{n}",
+               (lambda t, nm=n, tgt=tgt, kd=k: fetch_rewrite(nm, tgt, kd, t, keep_links)), 0.30)
+              for n, tgt, k in after]
     if _vendor_enabled(use_vendor):
         chain.append(("vendor", lambda t: fetch_vendor(url, t, keep_links), 0.50))
         chain.append(("exa", lambda t: fetch_exa(url, t, keep_links), 0.45))
@@ -593,6 +973,9 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
                                        budget, name)
                 if not (res.get("text") or "").strip():
                     raise RuntimeError("empty text")
+                wall = wall_reason(res["text"])
+                if wall:
+                    raise RuntimeError(f"wall page, not content ({wall})")
                 res["text"] = res["text"][:max_chars]
                 res["chars"] = len(res["text"])
                 res["ok"] = True
@@ -622,7 +1005,7 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
                 errors.append(f"{name}: {str(e)[:110]}")
                 # borrowed endpoints get one attempt: a refused connection to a
                 # free vendor is a no, not an invitation to knock twice
-                if name in ("vendor", "exa"):
+                if name in ("vendor", "exa") or name.startswith("rewrite:"):
                     break
             time.sleep(min(0.8 * (attempt + 1), max(0.0, hard_end - time.monotonic())))
 
@@ -657,8 +1040,10 @@ def main():
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-reader", action="store_true")
     ap.add_argument("--no-archive", action="store_true")
+    ap.add_argument("--no-rewrite", action="store_true",
+                    help="skip the machine-readable twins (github raw, StackExchange API, ...)")
     ap.add_argument("--no-vendor", action="store_true",
-                    help="skip the Firecrawl extract stage (also FETCH_VENDOR=0)")
+                    help="skip the vendor extract stages, Firecrawl and Exa (also FETCH_VENDOR=0)")
     ap.add_argument("--deadline", type=float, default=45.0,
                     help="hard wall-clock cap per URL in seconds (default 45); "
                          "a stage that ignores its own timeout is abandoned")
@@ -673,7 +1058,7 @@ def main():
     with ThreadPoolExecutor(max_workers=a.parallel) as ex:
         futs = {ex.submit(fetch, u, a.timeout, a.max_chars, a.links, ttl,
                           not a.no_reader, not a.no_archive, 1, a.deadline,
-                          not a.no_vendor): u for u in a.urls}
+                          not a.no_vendor, not a.no_rewrite): u for u in a.urls}
         for f in as_completed(futs):
             results.append(f.result())
 

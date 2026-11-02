@@ -87,3 +87,12 @@ Not in `--all` and not in any default group. Add with `--group vendor` or `--wit
 Why opt-in: these are undocumented free tiers. They answered 5/5 queries on the day
 our classic general providers were blocked from this host, but they can require a key
 or disappear without notice. Never make one the only path.
+
+## Classic tier: Yahoo
+
+`yahoo` joined the `web` group on 2026-11-02. Bing's index behind a front end
+that still answers non-browser clients: 3/3 queries, ~0.8 s, relevant — while
+from the same host `bing` served junk, `ddg` 403'd, `google` hit a consent wall,
+and brave/mojeek/startpage were 429/403/empty. It needs one thing plain
+`urlopen` does not do: keep the cookie from its first (500) response, or every
+retry 500s forever. `search.py` now runs one cookie jar for the whole process.

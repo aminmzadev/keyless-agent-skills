@@ -1,7 +1,7 @@
 ---
 name: fetch-page
-description: Turn any URL into clean markdown for an agent, with a five-stage fallback (direct → two independent kinds of relay → two vendor readers that render JS and get past bot walls → Wayback Machine), a hard wall-clock deadline, PDF support and a 24-hour cache. Use whenever you have a URL and need its readable content — documentation, articles, changelogs, terms pages, papers, or a page a plain request cannot get through.
-version: 1.4.0
+description: Turn any URL into clean markdown for an agent, with a five-stage fallback plus machine-readable rewrites (direct → two independent kinds of relay → two vendor readers that render JS and get past bot walls → Wayback Machine), and a PDF extractor that needs no dependency, a hard wall-clock deadline, PDF support and a 24-hour cache. Use whenever you have a URL and need its readable content — documentation, articles, changelogs, terms pages, papers, or a page a plain request cannot get through.
+version: 1.5.0
 license: MIT
 ---
 
@@ -30,17 +30,49 @@ fetch.py https://example.com --links            # also extract the links
 fetch.py https://example.com --text             # print the text, no files
 fetch.py https://example.com --deadline 15      # give up after 15s, no matter what
 fetch.py https://example.com --no-vendor        # five stages -> three (no vendor calls)
+fetch.py https://example.com --no-rewrite       # skip the machine-readable twins
 ```
 
 ## The fallback chain
 
 | Stage | Transport | Handles |
 |---|---|---|
+| 0. rewrite | github blob → `raw.githubusercontent.com`; StackOverflow → `api.stackexchange.com` | the two hosts where the page is a UI around the content. Runs **before** direct |
 | 1. direct | urllib, browser UA, gzip, redirects | normal pages; a hand-written `html.parser` extractor drops nav/footer/aside/forms and cookie/subscribe boilerplate, keeps headings and list structure |
 | 2. reader | `r.jina.ai/<url>` markdown, then the CORS relays (`allorigins` → `cors.lol` → `codetabs`) | JS-rendered pages, anti-bot walls, PDFs when no local extractor exists |
 | 3. vendor:firecrawl | `api.firecrawl.dev/v2/scrape`, no credential | the hard walls: JS shells, Cloudflare, 403-to-plain-HTTP pages |
 | 4. vendor:exa | `mcp.exa.ai/mcp` JSON-RPC `web_fetch_exa`, no credential | the same walls when Firecrawl is down or rate-limited; returns the page's own markdown |
 | 5. archive | Wayback Machine snapshot | pages that are gone, moved or blocked entirely |
+
+**Machine-readable twins.** Some URLs have a second form that is one request
+and no navigation: a github blob is the same file with a UI wrapped around it,
+a StackOverflow question is the same Q&A with Cloudflare in front of it. Those
+two run *before* the direct stage, because direct does not fail on them — it
+returns 200 with a navigation sandwich, which is worse. The rest run after the
+relays:
+
+| URL | twin | measured 2026-11-02 |
+|---|---|---|
+| `github.com/…/blob/…` | `raw.githubusercontent.com/…` | 200, clean README, 0.1 s |
+| `stackoverflow.com/questions/<id>`, `*.stackexchange.com`, superuser, serverfault, askubuntu | `api.stackexchange.com/2.3/questions/<id>?filter=withbody` | 200, rendered as question + accepted answer + top answers |
+| `en.wikipedia.org/wiki/X` | `…/api/rest_v1/page/summary/X` | 200, the lede, labelled as a summary |
+| `x.com/…`, `twitter.com/…` | `nitter.net`, `nitter.privacydev.net`, `xcancel.com` | nitter answers; xcancel 451 |
+| `medium.com/…` | `scribe.rip/…` | server alive, unverified on a real post |
+| `youtube.com/watch?v=…`, `youtu.be/…` | `youtube.com/oembed?…` | 200, title + channel, not the video |
+| `arxiv.org/abs/…` | `arxiv.org/pdf/…` | 200, the paper itself |
+
+`--no-rewrite` turns the whole row off. Rewrites are keyless direct endpoints,
+so they are not affected by `--no-vendor`.
+
+**Walls are not answers.** A relay that returns 200 with a bot challenge or a
+signup gate has not read the article. Every accepted body is checked before it
+is cached: challenge markers (`just a moment`, `checking your browser`, a
+relay's `Warning: Target URL returned error 403`) and signup gates (`sign up
+with google`, `log in to continue`, `subscribe to continue`) reject the stage
+and the chain moves on. Without this, `fetch.py
+https://stackoverflow.com/questions/1976007` returned `ok: true` with 20,000
+characters of StackOverflow's own signup page — inside the length cap, past the
+thin-content check, and quotable by an agent that had read nothing.
 
 **Why two vendor readers, and why Exa sits before Wayback.** Firecrawl is the
 better scraper when it works; it is also a single borrowed endpoint that can be
@@ -60,8 +92,13 @@ characters and looks terminally truncated. This skill asks for 50,000, which
 returned 31,442 on a long Wikipedia article. If you ever see `vendor:exa` results
 that stop mid-sentence around 3k, something unset the parameter.
 
-PDF text: `pdftotext` → `pypdf` → reader proxy. If none of the three can read it,
-you get a clear error naming the missing dependency, not a silent empty file.
+PDF text: `pdftotext` → `pypdf` → **built-in parser** → reader proxy. The
+built-in one is pure stdlib — it inflates the content streams itself and decodes
+TeX ligature glyphs and subset-font encodings — which matters on exactly the
+machines this pack targets. Measured with neither poppler nor pypdf installed:
+`arxiv.org/pdf/1706.03762` came through at 20,000 chars (the cap) in 0.6 s.
+If all four fail you get a clear error naming what was missing, not an empty
+file.
 
 ## Output
 

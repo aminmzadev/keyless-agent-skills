@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import unittest
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -77,6 +78,14 @@ class _Site:
 
             def do_GET(self):
                 outer.requests.append(self.path)
+                if self.path.startswith("/json"):
+                    body = json.dumps(outer.exa_payload).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 body = outer.page_html.encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -565,6 +574,201 @@ class StageReportingTests(unittest.TestCase):
         self.assertTrue(row["ok"], row)
         self.assertIn("stages_cut", row)
         self.assertFalse(row["deadline_exceeded"])
+
+
+class RewriteMappingTests(unittest.TestCase):
+    """rewrite_candidates is pure: URL in, machine-readable twin out."""
+
+    def test_github_blob_becomes_raw(self):
+        out = fetch_mod.rewrite_candidates("https://github.com/FFmpeg/FFmpeg/blob/master/README.md")
+        self.assertEqual(out[0][0], "gh-raw")
+        self.assertEqual(out[0][1], "https://raw.githubusercontent.com/FFmpeg/FFmpeg/master/README.md")
+        self.assertEqual(out[0][2], "raw")
+
+    def test_github_repo_page_is_not_rewritten(self):
+        self.assertEqual(fetch_mod.rewrite_candidates("https://github.com/FFmpeg/FFmpeg"), [])
+
+    def test_stackoverflow_question_becomes_the_api(self):
+        out = fetch_mod.rewrite_candidates("https://stackoverflow.com/questions/1976007/what-chars")
+        self.assertEqual(out[0][0], "stackexchange")
+        self.assertEqual(out[0][1],
+                         "https://api.stackexchange.com/2.3/questions/1976007"
+                         "?site=stackoverflow&filter=withbody")
+
+    def test_subdomain_stackexchange_keeps_its_site(self):
+        out = fetch_mod.rewrite_candidates("https://math.stackexchange.com/questions/42/is-it-true")
+        self.assertIn("site=math", out[0][1])
+
+    def test_wikipedia_gets_the_rest_summary(self):
+        out = fetch_mod.rewrite_candidates("https://en.wikipedia.org/wiki/FFmpeg")
+        self.assertEqual(out[0][0], "wikipedia-summary")
+        self.assertTrue(out[0][1].startswith("https://en.wikipedia.org/api/rest_v1/page/summary/"))
+
+    def test_youtube_watch_and_short_forms(self):
+        a = fetch_mod.rewrite_candidates("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        b = fetch_mod.rewrite_candidates("https://youtu.be/dQw4w9WgXcQ")
+        self.assertEqual(a[0][0], b[0][0], "watch and youtu.be must map to the same rewrite")
+        self.assertIn("v=dQw4w9WgXcQ", a[0][1])
+
+    def test_x_gets_mirror_candidates_in_order(self):
+        out = fetch_mod.rewrite_candidates("https://x.com/rustlang/status/1")
+        self.assertEqual([c[0] for c in out], ["nitter", "nitter-privacydev", "xcancel"])
+
+    def test_arxiv_abs_gets_the_pdf(self):
+        out = fetch_mod.rewrite_candidates("https://arxiv.org/abs/1706.03762")
+        self.assertEqual(out[0][1], "https://arxiv.org/pdf/1706.03762")
+
+    def test_ordinary_urls_have_no_twin(self):
+        for u in ("https://example.com/a/b", "https://docs.python.org/3/library/asyncio.html",
+                  "https://news.ycombinator.com/item?id=1"):
+            self.assertEqual(fetch_mod.rewrite_candidates(u), [], u)
+
+    def test_priority_split(self):
+        before, after = fetch_mod.order_rewrites(
+            fetch_mod.rewrite_candidates("https://github.com/a/b/blob/c/d.md"))
+        self.assertEqual([c[0] for c in before], ["gh-raw"])
+        before, after = fetch_mod.order_rewrites(
+            fetch_mod.rewrite_candidates("https://en.wikipedia.org/wiki/X"))
+        self.assertEqual(before, [])
+        self.assertEqual([c[0] for c in after], ["wikipedia-summary"])
+
+
+class RewriteFetchTests(unittest.TestCase):
+    """The fetching half: renderers, priority, and running before the direct stage."""
+
+    def setUp(self):
+        self.site = _Site()
+
+    def tearDown(self):
+        self.site.close()
+
+    def test_github_raw_is_served_before_direct(self):
+        target = f"{self.site.base}/README.md"
+        self.site.page_html = "# README\n\n" + "real file content " * 40
+        orig = (fetch_mod.rewrite_candidates, fetch_mod.fetch_direct)
+        fetch_mod.rewrite_candidates = lambda url: [("gh-raw", target, "raw")]
+        fetch_mod.fetch_direct = lambda url, t, keep_links=False: (_ for _ in ()).throw(
+            RuntimeError("github nav sandwich"))
+        try:
+            res = fetch_mod.fetch(f"{self.site.base}/blob/page", timeout=10, deadline=20, ttl=0,
+                                  use_reader=False, use_vendor=False, use_archive=False, retries=0)
+        finally:
+            fetch_mod.rewrite_candidates, fetch_mod.fetch_direct = orig
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["source"], "rewrite:gh-raw")
+        self.assertIn("real file content", res["text"])
+        self.assertEqual(res["title"], "README.md")
+
+    def test_stackexchange_json_is_rendered_as_a_qa_page(self):
+        payload = {"items": [
+            {"title": "What characters are forbidden?&lt;b&gt;", "link": "https://so.test/q/1",
+             "score": 42, "answer_count": 3, "is_answered": True,
+             "body": "<p>The forbidden characters are <code>&lt; &gt; : &quot;</code></p>"},
+            {"answer_id": 9, "score": 17, "is_accepted": True,
+             "owner": {"display_name": "someone"},
+             "body": "<p>Use a whitelist.</p>"},
+        ]}
+        self.site.exa_payload = payload                     # reused generic JSON responder
+        res = fetch_mod.fetch_rewrite("stackexchange", f"{self.site.base}/json", "json", 10)
+        self.assertEqual(res["source"], "rewrite:stackexchange")
+        self.assertIn("# What characters are forbidden?", res["text"])
+        self.assertIn("42 votes", res["text"])
+        self.assertIn("## Answer 1 (accepted)", res["text"])
+        self.assertIn("Use a whitelist.", res["text"])
+        self.assertNotIn("<p>", res["text"])
+
+    def test_stackexchange_with_no_items_is_an_error(self):
+        self.site.exa_payload = {"items": []}
+        with self.assertRaises(RuntimeError):
+            fetch_mod.fetch_rewrite("stackexchange", f"{self.site.base}/json", "json", 10)
+
+    def test_wikipedia_summary_says_it_is_only_a_summary(self):
+        self.site.exa_payload = {"title": "FFmpeg", "extract": "FFmpeg is a free software project."}
+        res = fetch_mod.fetch_rewrite("wikipedia-summary", f"{self.site.base}/json", "json", 10)
+        self.assertIn("# FFmpeg", res["text"])
+        self.assertIn("lede only", res["text"])
+        self.assertTrue(res["meta"].get("summary"))
+
+    def test_youtube_oembed_does_not_pretend_to_be_the_video(self):
+        self.site.exa_payload = {"title": "A video", "author_name": "A channel"}
+        res = fetch_mod.fetch_rewrite("youtube-oembed", f"{self.site.base}/json", "json", 10)
+        self.assertIn("by A channel", res["text"])
+        self.assertIn("not the video", res["text"])
+
+
+class WallTests(unittest.TestCase):
+    """A relay answering 200 with a wall is not an answer."""
+
+    def test_signup_walls_are_named(self):
+        page = ("Final URL: https://stackoverflow.com/questions/1\n\n"
+                "# Join Stack Overflow\n\nSign up with Google\nSign up with GitHub\n"
+                + "filler " * 200)
+        self.assertEqual(fetch_mod.wall_reason(page), "sign up with google")
+
+    def test_challenge_pages_are_named(self):
+        page = "<title>Just a moment...</title> Checking your browser before accessing" + " x" * 400
+        self.assertIsNotNone(fetch_mod.wall_reason(page))
+
+    def test_relay_error_wrappers_are_named(self):
+        page = "Title: \n\nWarning: Target URL returned error 403: Forbidden\n"
+        self.assertIsNotNone(fetch_mod.wall_reason(page))
+
+    def test_real_pages_are_not_walls(self):
+        for page in ("# Documentation\n\nInstall with pip install ffmpeg-python.\n" + "text " * 300,
+                     "# Sign in with Google — OAuth guide\n\nThis page explains the flow. "
+                     + "Long body. " * 300):
+            self.assertIsNone(fetch_mod.wall_reason(page), page[:50])
+
+    def test_a_wall_stage_is_rejected_and_the_chain_moves_on(self):
+        site = _Site()
+        site.page_html = ("<html><body><h1>Join Stack Overflow</h1>"
+                          "<a>Sign up with Google</a> Sign up with GitHub"
+                          + "<p>" + "navigation boilerplate " * 40 + "</p></body></html>")
+        try:
+            res = fetch_mod.fetch(f"{site.base}/walled", timeout=5, deadline=8, ttl=0,
+                                  use_reader=False, use_vendor=False, use_archive=False,
+                                  use_rewrite=False, retries=0)
+        finally:
+            site.close()
+        self.assertFalse(res["ok"], res)
+        self.assertTrue(any("wall page" in e for e in res["errors"]), res["errors"])
+        self.assertEqual(res["text"], "")
+
+
+class StdlibPdfTests(unittest.TestCase):
+    """PDF text without poppler or pypdf — the Termux / slim container case."""
+
+    @staticmethod
+    def _mini_pdf(text=b"Hello PDF world"):
+        content = b"BT /F1 12 Tf 72 720 Td (" + text + b") Tj ET"
+        comp = zlib.compress(content)
+        head = (b"%PDF-1.7\n1 0 obj\n<< /Length " + str(len(comp)).encode()
+                + b" /Filter /FlateDecode >>\nstream\n")
+        return head + comp + b"\nendstream\nendobj\n%%EOF\n"
+
+    def test_flate_decode_stream_is_read(self):
+        out = fetch_mod.pdf_extract_stdlib(self._mini_pdf())
+        self.assertIn("Hello PDF world", out)
+
+    def test_tex_ligature_codes_are_decoded(self):
+        # \x0c is TeX's T1 slot for the "fi" ligature: "efficient" arrives as e\x0ccient
+        out = fetch_mod.pdf_extract_stdlib(self._mini_pdf(b"e\x0ecient e\x0cne"))
+        self.assertIn("efficient", out)
+        self.assertIn("efine", out)
+
+    def test_garbage_pdf_returns_empty_rather_than_raising(self):
+        self.assertEqual(fetch_mod.pdf_extract_stdlib(b"not a pdf at all"), "")
+
+    def test_pdf_to_text_falls_back_when_pdftotext_and_pypdf_are_missing(self):
+        # a real page's worth of text, not one line: the fallback only accepts a
+        # result long enough to be an answer rather than a stray caption
+        orig_which = fetch_mod.shutil.which
+        fetch_mod.shutil.which = lambda name: None
+        try:
+            txt = fetch_mod.pdf_to_text(self._mini_pdf(b"Hello PDF world " * 8))
+        finally:
+            fetch_mod.shutil.which = orig_which
+        self.assertTrue(txt and "Hello PDF world" in txt, txt)
 
 
 class UnitTests(unittest.TestCase):

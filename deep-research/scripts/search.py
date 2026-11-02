@@ -30,6 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import http.cookiejar as cookiejar
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -43,12 +44,19 @@ RETRIES = 2
 
 
 # --------------------------------------------------------------------- plumbing
+# One cookie jar for the whole run. Yahoo's front end answers 500 until it has
+# set a session cookie, and only a client that *keeps* that cookie sees the
+# retry succeed — plain urlopen throws the Set-Cookie away and 500s forever.
+_COOKIES = cookiejar.CookieJar()
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_COOKIES))
+
+
 def http(url, headers=None, timeout=TIMEOUT):
     h = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9"}
     if headers:
         h.update(headers)
     req = urllib.request.Request(url, headers=h)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _OPENER.open(req, timeout=timeout) as r:
         return r.read().decode("utf-8", "replace")
 
 
@@ -131,6 +139,9 @@ def _unwrap_engine_link(url):
     m = re.search(r"[?&]uddg=([^&]+)", url)
     if m:
         return urllib.parse.unquote(html_lib.unescape(m.group(1)))
+    m = re.search(r"/RU=([^/]+)/", url)
+    if m:
+        return urllib.parse.unquote(m.group(1))
     m = re.search(r"[?&]u=a1([A-Za-z0-9_\-]+)", url)
     if m:
         try:
@@ -388,6 +399,35 @@ def p_bing_rss(q, n):
     for it in xml_items(raw)[:n]:
         out.append(item(child(it, "title"), child(it, "link"),
                         child(it, "description"), "bing"))
+    return out
+
+
+def p_yahoo(q, n):
+    """Yahoo's web results — Bing's index behind a front end that still answers bots.
+
+    Bing serves junk to suspected bots on some networks (our relevance gate drops
+    it) while this endpoint, same index, returns the real thing. Measured
+    2026-11-02: 3/3 queries, 0.8 s, relevant — where bing/ddg/google were
+    blocked or useless from the same host.
+    """
+    raw = http("https://search.yahoo.com/search?" + urllib.parse.urlencode(
+        {"p": q, "n": min(max(n, 10), 30), "ei": "UTF-8"}))
+    out = []
+    for block in re.split(r'<div class="[^"]*\balgo-sr\b[^"]*"', raw)[1:]:
+        a = (re.search(r'<h3[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
+             or re.search(r'<a[^>]+href="([^"]+)"[^>]*>(?:(?!</a>).)*?<h3[^>]*>(.*?)</h3>', block, re.S))
+        if not a:
+            continue
+        snip = (re.search(r'<div class="compText[^"]*"[^>]*>\s*<p[^>]*>(.*?)</p>', block, re.S)
+                or re.search(r'<p class="[^"]*fz-ms[^"]*"[^>]*>(.*?)</p>', block, re.S)
+                or re.search(r"<p[^>]*>(.*?)</p>", block, re.S))
+        url = _unwrap_engine_link(html_lib.unescape(a.group(1).strip()))
+        if (urllib.parse.urlparse(url).netloc or "").endswith("yahoo.com"):
+            continue
+        out.append(item(_clean(a.group(2), 200), url,
+                        _clean(snip.group(1)) if snip else "", "yahoo", len(out) + 1))
+        if len(out) >= n:
+            break
     return out
 
 
@@ -716,6 +756,7 @@ PROVIDERS = {
     "github": (p_github, "tech"), "npm": (p_npm, "tech"), "pypi": (p_pypi, "tech"),
     "arxiv": (p_arxiv, "academic"), "openalex": (p_openalex, "academic"),
     "europepmc": (p_europepmc, "academic"), "crossref": (p_crossref, "academic"),
+    "yahoo": (p_yahoo, "web"),
     "keenable": (p_keenable, "vendor"), "firecrawl": (p_firecrawl, "vendor"),
     "exa": (p_exa, "vendor"),
 }
@@ -723,7 +764,7 @@ GROUPS = {
     # bing_rss needs no relay at all: when the relays are throttled it is the
     # difference between "nothing" and "something". It is noisy, but the
     # off-topic gate above now throws the noise away.
-    "web": ["bing", "ddg", "wikipedia", "bing_rss"],
+    "web": ["bing", "ddg", "yahoo", "wikipedia", "bing_rss"],
     "tech": ["hn", "stackexchange", "github"],
     "academic": ["arxiv", "openalex", "europepmc"],
     # vendor APIs: no key, no account, but borrowed infrastructure with no SLA.

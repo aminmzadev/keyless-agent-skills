@@ -1,13 +1,13 @@
 ---
 name: web-search
 description: Keyless multi-provider web search for agents. Twenty providers behind one command — seventeen classic ones plus an opt-in vendor tier (Keenable, Firecrawl, Exa) that returns page excerpts instead of teasers — with automatic fallback, query relaxation, cross-provider agreement ranking and domain diversity. Use for any "look this up", "what is the latest", "find me a library/tool/paper" request when you only need results, not a full report.
-version: 1.3.1
+version: 1.4.0
 license: MIT
 ---
 
 # web-search
 
-One command, twenty providers, no key and no account. Seventeen are classic
+One command, twenty-one providers, no key and no account. Eighteen are classic
 SERP scrapers and public data endpoints; three are vendor APIs with an anonymous
 free tier, kept in their own opt-in group. This is the *finding* half
 of the research pair; `fetch-page` reads, `deep-research` orchestrates both.
@@ -24,7 +24,7 @@ Use `deep-research` when the answer has to be written with citations.
 ## Quick start
 
 ```bash
-search.py "free tts api"                        # web group: bing + ddg + wikipedia
+search.py "free tts api"                        # web group: bing + ddg + yahoo + wikipedia
 search.py "python subprocess timeout" --group tech
 search.py "speech synthesis" --group academic --limit 5
 search.py "rust async" --all --json             # every provider, merged and ranked
@@ -34,7 +34,7 @@ search.py "rust async" --with-vendor            # web group + vendor tier
 search.py --list-providers
 ```
 
-Groups: `web` (bing, ddg, wikipedia) · `tech` (hn, stackexchange, github) ·
+Groups: `web` (bing, ddg, yahoo, wikipedia) · `tech` (hn, stackexchange, github) ·
 `academic` (arxiv, openalex, europepmc, crossref) · `all` (everything except `pypi`).
 
 ## The one thing to know
