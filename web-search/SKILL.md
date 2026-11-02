@@ -1,6 +1,6 @@
 ---
 name: web-search
-description: Keyless multi-provider web search for agents. Twenty providers behind one command — seventeen classic ones plus an opt-in vendor tier (Keenable, Firecrawl, Exa) that returns page excerpts instead of teasers — with automatic fallback, query relaxation, cross-provider agreement ranking and domain diversity. Use for any "look this up", "what is the latest", "find me a library/tool/paper" request when you only need results, not a full report.
+description: Keyless multi-provider web search for agents. Twenty-one providers behind one command — eighteen classic ones plus an opt-in vendor tier (Keenable, Firecrawl, Exa) that returns page excerpts instead of teasers — with automatic fallback, query relaxation, cross-provider agreement ranking and domain diversity. Use for any "look this up", "what is the latest", "find me a library/tool/paper" request when you only need results, not a full report.
 version: 1.4.0
 license: MIT
 ---

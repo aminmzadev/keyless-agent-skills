@@ -13,12 +13,15 @@ npx skills add aminmzadev/keyless-agent-skills --list       # what is inside
 npx skills add aminmzadev/keyless-agent-skills --skill web-search -a claude-code --copy
 ```
 
-npm (name reserved, first publish pending): `keyless-agent-skills` — 84.8 kB packed,
-34 files, **no lifecycle scripts**, no binaries, no voice models.
+npm: `keyless-agent-skills` — **not published yet** (the registry returns 404 for
+that name today). The tree that will go up is 84.8 kB packed, 34 files, no
+lifecycle scripts, no binaries, no voice models. Until it is live, use
+`npx skills add` above or the release zips below.
 
-Prefer files? The [v1.2.0 release](https://github.com/aminmzadev/keyless-agent-skills/releases/tag/v1.2.0)
-has the bundle zip plus one zip per skill and a `SHA256SUMS.txt`. Or just clone and run
-`./install.sh --check` to see what your machine already has.
+Prefer files? Each [release](https://github.com/aminmzadev/keyless-agent-skills/releases)
+carries the bundle zip, one zip per skill and a `SHA256SUMS.txt`. Releases are cut
+deliberately and lag `main` in between, so clone when you want the newest code. Or
+just run `./install.sh --check` to see what your machine already has.
 
 ## Start here
 
@@ -39,7 +42,7 @@ has the bundle zip plus one zip per skill and a `SHA256SUMS.txt`. Or just clone 
 | Skill | Does | Entry point | Hard deps |
 |---|---|---|---|
 | [`web-search`](web-search/SKILL.md) | 21 keyless providers (18 classic + 3 vendor), groups, ranking, query relaxation | `scripts/search.py` | python3 |
-| [`fetch-page`](fetch-page/SKILL.md) | URL → markdown, five-stage fallback + rewrites, PDFs | `scripts/fetch.py` | python3 (+ poppler/pypdf for local PDFs) |
+| [`fetch-page`](fetch-page/SKILL.md) | URL → markdown, five-stage fallback + rewrites, wall detection, PDFs | `scripts/fetch.py` | python3 (poppler/pypdf optional — a built-in parser covers PDFs) |
 | [`deep-research`](deep-research/SKILL.md) | search → read → **follow links** → cited report | `scripts/research.py` | python3 |
 
 `web-search` and `fetch-page` are independent: install either alone and it works.
@@ -56,20 +59,20 @@ have a URL, need text?  → fetch-page.py
 need a written answer with citations? → research.py
 ```
 
-## Install
+## Dependencies and self-checks
 
 ```bash
 ./install.sh              # checks + installs ffmpeg, edge-tts, pillow, poppler (all optional)
 ./install.sh --piper      # + offline TTS: piper-tts and one ~63 MB voice
 ./install.sh --check      # report only, change nothing
-./test-all.sh             # 46 smoke tests, ~2-3 min cold (network)
-./test-all.sh --fast      # skip slow network work: 39 passed, 2 skipped
+./test-all.sh             # 49 checks, ~3 min cold (network): 48 passed, 1 skipped
+./test-all.sh --fast      # skip slow network work: 45 passed, 3 skipped
 ```
 
 Nothing needs to be copied into a config file: each skill is a directory with a
 `SKILL.md` (YAML frontmatter + usage) and a `scripts/` folder. Drop the directory
 where your agent looks for skills, or call the scripts by path. `MANIFEST.json`
-lists all six with entry points and routing hints.
+lists all seven with entry points and routing hints.
 
 ## Composition
 
@@ -89,7 +92,10 @@ ffmpeg-pipeline/scripts/vidkit.py video "a glass lighthouse at dusk" -o story.mp
    partial results with a warning rather than an exception.
 2. **No credentials, ever.** Nothing here asks for a key, an account, or a browser.
 3. **Measured, not assumed.** Latencies, limits and failure signatures in
-   `reference/` come from tests run on 2026-11-01, not from documentation.
+   `reference/` come from tests run on 2026-11-01 and 2026-11-02, not from
+   documentation. When a measurement turns out to be wrong, the note is corrected
+   where it was written (Exa's extract was recorded as "hard-capped at ~3,100
+   chars"; it was the default `maxCharacters`).
 4. **The agent stays in charge.** Scripts return paths and JSON; judgement,
    wording and final checks stay with the model.
 

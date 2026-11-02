@@ -3,8 +3,8 @@
 Seven skills, no API keys, no accounts, no sign-ups. One zip, one guide, ~4,000 lines
 of Python that assume nothing about your machine beyond `python3`.
 
-- **Version:** 1.2.0 · built 2026-11-01
-- **Bundle:** `agent-skills-pack-v1.2.0.zip` (self-contained, nothing to download at install time)
+- **Version:** 1.5.0 · built 2026-11-02
+- **Bundle:** `agent-skills-pack-vX.Y.Z.zip` from the latest release (self-contained, nothing to download at install time)
 - **Works with:** any agent that can run shell commands — pi, Claude Code, Codex, Cursor,
   aider, a cron job, or you at a terminal.
 
@@ -32,7 +32,7 @@ Plus `shared/cachectl.py` (one cache for everything), `install.sh`, `test-all.sh
 ### 2.1 Unzip it
 
 ```bash
-unzip agent-skills-pack-v1.2.0.zip -d ~/agent-skills
+unzip agent-skills-pack-vX.Y.Z.zip -d ~/agent-skills       # X.Y.Z = the latest release
 cd ~/agent-skills
 ```
 
@@ -60,8 +60,8 @@ None of them is required. Every script detects what it has and says what it lost
 ### 2.3 Verify
 
 ```bash
-./test-all.sh            # 46 smoke tests, ~2-3 min cold (network)
-./test-all.sh --fast     # skip slow network work: 39 passed, 2 skipped
+./test-all.sh            # 49 checks, ~3 min cold (network): 48 passed, 1 skipped
+./test-all.sh --fast     # skip slow network work: 45 passed, 3 skipped
 ```
 
 Everything green means images, audio, video, search, fetch, routing, cache and
@@ -89,11 +89,11 @@ own directory.
 
 ### 2.5 Install one skill only
 
-Each archive is self-contained — `web-search-v1.2.0.zip` has no dependency on the
+Each archive is self-contained — `web-search-vX.Y.Z.zip` has no dependency on the
 rest of the pack:
 
 ```bash
-unzip web-search-v1.2.0.zip -d ~/skills && python3 ~/skills/web-search/scripts/search.py "ffmpeg zoompan"
+unzip web-search-vX.Y.Z.zip -d ~/skills && python3 ~/skills/web-search/scripts/search.py "ffmpeg zoompan"
 ```
 
 ---
@@ -167,10 +167,13 @@ Local ffmpeg only — it never truncates narration: audio is padded or looped to
 # results only, fast
 python3 web-search/scripts/search.py "edge-tts 403 websocket" --group tech --limit 5
 python3 web-search/scripts/search.py "python asyncio timeout" --json
+python3 web-search/scripts/search.py "sqlite wal mode" --with-vendor   # + 3 vendor APIs
 
 # one URL -> markdown
 python3 fetch-page/scripts/fetch.py https://example.com --text
 python3 fetch-page/scripts/fetch.py url1 url2 --out pages/ --json
+python3 fetch-page/scripts/fetch.py https://www.g2.com/products/ffmpeg/reviews --deadline 25
+python3 fetch-page/scripts/fetch.py https://stackoverflow.com/questions/1976007 --text  # via the SE API
 
 # question -> cited report, optionally following the links inside the sources
 python3 deep-research/scripts/research.py "why does ffmpeg zoompan jitter" -o jitter.md --depth 2
@@ -263,12 +266,12 @@ eval "$CMD"
 ## 7. Reference
 
 ```
-agent-skills-pack-v1.2.0/
+agent-skills-pack-vX.Y.Z/
 ├── GUIDE.md                  ← this file
 ├── README.md                 the short version
 ├── MANIFEST.json             machine-readable catalogue (route from this)
 ├── install.sh                optional deps; --piper, --check
-├── test-all.sh               46 smoke tests; --fast
+├── test-all.sh               49 checks (+ 88 hermetic unit tests); --fast
 ├── sync.sh                   republish canonical scripts into the standalone skills
 ├── shared/cachectl.py        one cache for everything
 ├── skill-router/             SKILL.md + scripts/route.py
