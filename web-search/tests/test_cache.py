@@ -113,6 +113,52 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(S._cache_get("k5"), {"count": "old"})
 
 
+class NormalizeTests(unittest.TestCase):
+    """One malformed provider must not take down the whole search.
+
+    `dedupe()` indexes r["url"], `rank()` indexes r["title"], and both run
+    outside the per-provider try — so a provider returning anything but the
+    documented shape used to raise straight out of search().
+    """
+
+    def setUp(self):
+        self._providers = dict(S.PROVIDERS)
+
+    def tearDown(self):
+        S.PROVIDERS.clear()
+        S.PROVIDERS.update(self._providers)
+
+    def test_normalize_drops_junk_and_keeps_the_good_rows(self):
+        rows = S.normalize(["bare string", None, 42, {}, {"title": "t"},
+                            {"url": "https://a.example/1", "title": "ok"}], "p")
+        self.assertEqual([r["url"] for r in rows], ["", "https://a.example/1"])
+        self.assertEqual(rows[0]["provider"], "p")
+        self.assertEqual(rows[1]["provider"], "p")
+
+    def test_normalize_keeps_provider_extras(self):
+        rows = S.normalize([{"url": "https://a.example/2", "title": "t",
+                             "published": "2026-01-01", "extra": {"k": 1}}], "p")
+        self.assertEqual(rows[0]["published"], "2026-01-01")
+        self.assertEqual(rows[0]["extra"], {"k": 1})
+
+    def test_normalize_refuses_a_non_list(self):
+        for bad in (None, "string", {"a": 1}, 42):
+            self.assertEqual(S.normalize(bad, "p"), [])
+
+    def test_search_survives_a_broken_provider(self):
+        def junk(q, n):
+            return ["a bare string", {"title": "no url"},
+                    {"url": "https://a.example/1", "title": "good"}]
+
+        S.PROVIDERS["junk"] = (junk, 1.0)
+        res = S.search("anything", providers=["junk"], limit=5, use_cache=False)
+        # the point is that search() returns at all: it used to raise TypeError
+        # out of dedupe(). A url-less row is kept by title, which is by design.
+        self.assertEqual(res["errors"], {}, res)
+        self.assertEqual([r["url"] for r in res["results"]],
+                         ["", "https://a.example/1"], res)
+
+
 class CappedReadTests(unittest.TestCase):
     def setUp(self):
         self._cap = S.MAX_BODY

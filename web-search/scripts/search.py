@@ -799,6 +799,30 @@ GROUPS = {
 
 
 # ----------------------------------------------------------------------- merging
+def normalize(rows, provider=""):
+    """Coerce one provider's output into the shape the rest of the pipeline expects.
+
+    `dedupe()` indexes r["url"] and `rank()` indexes r["title"]: a provider that
+    returns a bare string, or a dict without a url, used to take the *whole*
+    search down with a KeyError/TypeError, because the merge runs outside the
+    per-provider try. The three shipped vendor providers guard themselves; the
+    registry is documented as an extension point, so the contract is enforced
+    here instead — one boundary, every provider, no exceptions.
+    """
+    out = []
+    for r in (rows if isinstance(rows, list) else []):
+        if not isinstance(r, dict):
+            continue
+        row = item(r.get("title") or "", r.get("url") or "", r.get("snippet") or "",
+                   r.get("provider") or provider, r.get("rank") or 0)
+        for k, v in r.items():          # keep provider-specific extras (published, extra, ...)
+            row.setdefault(k, v)
+        if not (row["url"] or row["title"]):
+            continue
+        out.append(row)
+    return out
+
+
 def norm_url(u):
     u = re.sub(r"^https?://", "", (u or "").lower())
     u = re.sub(r"^www\.", "", u)
@@ -879,8 +903,16 @@ CACHE_SCHEMA = 2        # bump when the payload shape changes; old entries are i
 
 try:                    # the shared cache layer, vendored next to us
     from _cachekit import atomic_write_json as _atomic_write_json
+    from _cachekit import pos_int
     from _cachekit import read_json as _read_json
 except ImportError:     # a lone copy of search.py: same behaviour
+    def pos_int(text):                              # noqa: D103 - see _cachekit
+        import argparse
+        n = int(text)
+        if n < 1:
+            raise argparse.ArgumentTypeError(f"must be 1 or more (got {n})")
+        return n
+
     def _atomic_write_json(path, obj, **kw):        # noqa: D103 - see _cachekit
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = f"{path}.tmp-{os.getpid()}"
@@ -947,7 +979,7 @@ def search(query, providers=None, group="web", limit=10, parallel=6, use_cache=T
         for fut in as_completed(jobs):
             name = jobs[fut]
             try:
-                results.extend(fut.result())
+                results.extend(normalize(fut.result(), name))
             except Exception as e:
                 errors[name] = str(e)[:150]
     if not results:
@@ -1010,8 +1042,8 @@ def main():
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--with-vendor", action="store_true",
                     help="add the vendor tier (keenable, firecrawl, exa) to the chosen group")
-    ap.add_argument("--limit", type=int, default=10)
-    ap.add_argument("--parallel", type=int, default=6)
+    ap.add_argument("--limit", type=pos_int, default=10)
+    ap.add_argument("--parallel", type=pos_int, default=6)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--list-providers", action="store_true")

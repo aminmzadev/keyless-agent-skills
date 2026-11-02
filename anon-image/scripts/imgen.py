@@ -74,6 +74,37 @@ def post_json(url, payload, timeout=TIMEOUT):
     return code, js
 
 
+def check_out(path):
+    """Fail before the API call, not after it.
+
+    `gen ... -o /tmp` used to generate an image, then die with IsADirectoryError
+    while saving it — the request was paid for and the picture was lost. The
+    destination is now checked up front, in one place, for every command.
+    """
+    if os.path.isdir(path):
+        raise SystemExit(f"-o {path}: is a directory, give it a file name")
+    parent = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as e:
+            raise SystemExit(f"-o {path}: cannot create {parent}: {e.strerror or e}")
+    if not os.access(parent, os.W_OK):
+        raise SystemExit(f"-o {path}: {parent} is not writable")
+    return path
+
+
+def load_image(path):
+    """PIL on a missing file raises FileNotFoundError from inside nested frames."""
+    from PIL import Image, UnidentifiedImageError
+    if not os.path.exists(path):
+        raise SystemExit(f"no such image: {path}")
+    try:
+        return Image.open(path)
+    except UnidentifiedImageError:
+        raise SystemExit(f"not an image: {path}")
+
+
 def download(url, path, timeout=TIMEOUT):
     code, raw, hdrs = _req(url, timeout=timeout)
     if code != 200 or not raw:
@@ -93,6 +124,7 @@ def human(n):
 # ------------------------------------------------------------------- generation
 def gen_one(prompt, out, ratio="1:1", retries=2):
     """One text-to-image call. Returns (path, bytes, seconds)."""
+    check_out(out)
     if ratio not in RATIOS:
         raise SystemExit(f"bad --ratio {ratio}; pick one of {', '.join(RATIOS)}")
     t0 = time.time()
@@ -152,6 +184,7 @@ def cmd_batch(a):
 
 def cmd_edit(a):
     src = a.image
+    check_out(a.out)
     if not os.path.exists(src):
         raise SystemExit(f"no such file: {src}")
     size_mb = os.path.getsize(src) / 1048576
@@ -187,8 +220,8 @@ def _font(size):
 
 
 def _tile(path, w):
-    from PIL import Image
-    im = Image.open(path).convert("RGB")
+    from PIL import Image                 # Image.LANCZOS is needed below
+    im = load_image(path).convert("RGB")
     return im.resize((w, max(1, round(im.height * w / im.width))), Image.LANCZOS)
 
 
@@ -206,6 +239,7 @@ def cmd_sheet(a):
     rows = (len(tiles) + cols - 1) // cols
     W = pad * 2 + cols * tw + (cols - 1) * gap
     H = pad * 2 + rows * (th + cap) + (rows - 1) * gap + (54 if a.title else 0)
+    check_out(a.out)
     canvas = Image.new("RGB", (W, H), (16, 16, 18))
     d = ImageDraw.Draw(canvas)
     y0 = pad

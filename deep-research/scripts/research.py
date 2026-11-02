@@ -34,6 +34,24 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fetch as F
 import search as S
 
+try:
+    from _cachekit import nonneg_int as _nonneg_int
+    from _cachekit import pos_int as _pos_int
+except ImportError:                     # a lone copy: same behaviour, same messages
+    import argparse as _argparse
+
+    def _pos_int(text):
+        n = int(text)
+        if n < 1:
+            raise _argparse.ArgumentTypeError(f"must be 1 or more (got {n})")
+        return n
+
+    def _nonneg_int(text):
+        n = int(text)
+        if n < 0:
+            raise _argparse.ArgumentTypeError(f"must be 0 or more (got {n})")
+        return n
+
 STOP = set("""a an the and or but if then than that this these those of in on at to for from
 with without into over under about as by is are was were be been being do does did doing
 have has had having it its it's we our you your they their he she them i not no nor so such
@@ -300,6 +318,13 @@ def follow_links(docs, question, per_page=2, budget=6, max_chars=18000):
     return extra, failures, per_doc
 
 
+def cell(value, limit=70):
+    """One line, one cell. A title with a newline used to split the row in two and
+    a `|` in a title silently added a column."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text.replace("|", "/").replace("\\", "/")[:limit]
+
+
 def to_markdown(res):
     q = res["question"]
     docs = res["sources"]
@@ -317,7 +342,7 @@ def to_markdown(res):
         if not sents:
             continue
         dom = re.sub(r"^https?://(www\.)?", "", d["url"]).split("/")[0]
-        L.append(f"**[{i}] {d.get('title') or d.get('search_title') or dom}** — {dom}")
+        L.append(f"**[{i}] {cell(d.get('title') or d.get('search_title') or dom)}** — {dom}")
         for s in sents[:3]:
             L.append(f"- {s}  \n  <sub>[{i}]</sub>")
         L.append("")
@@ -327,42 +352,43 @@ def to_markdown(res):
         L.append("| value | seen in |")
         L.append("|---|---|")
         for v, c in res["numbers"][:14]:
-            L.append(f"| `{v}` | {c} source(s) |")
+            L.append(f"| `{cell(v, 40)}` | {c} source(s) |")
         L.append("")
 
     L.append("## Sources\n")
     L.append("| # | title | domain | chars | hop | via | url |")
     L.append("|---|---|---|---|---|---|---|")
     for i, d in enumerate(docs, 1):
-        dom = re.sub(r"^https?://(www\.)?", "", d["url"]).split("/")[0]
-        title = (d.get("title") or d.get("search_title") or "").replace("|", "/")[:70]
+        dom = cell(re.sub(r"^https?://(www\.)?", "", d["url"]).split("/")[0], 40)
+        title = cell(d.get("title") or d.get("search_title") or "")
         hop = d.get("hop", 1)
         via = d.get("via_link_from")
         if via:
             # hoisted out of the f-string: Python < 3.12 forbids backslashes
             # inside an f-string expression part (PEP 701 lifted that)
-            vhost = re.sub(r"^https?://(www\.)?", "", via).split("/")[0]
-            vtxt = f"link from {vhost}"
+            vhost = cell(re.sub(r"^https?://(www\.)?", "", via).split("/")[0], 40)
+            vtxt = cell(f"link from {vhost}", 40)
         else:
-            vtxt = str(d.get("source"))
+            vtxt = cell(d.get("source"), 40)
         L.append(f"| [{i}] | {title} | {dom} | {d.get('chars', 0)} | {hop} | "
-                 f"{vtxt} | {d['url']} |")
+                 f"{vtxt} | {cell(d['url'], 200)} |")
     L.append("")
 
     if res.get("followed"):
         L.append(f"## Followed links (hop 2, {len(res['followed'])} page(s))\n")
         L.append("Read because they were linked from a page that answered the question — "
                  "a search engine never ranked them.\n")
-        for f in res["followed"][:10]:
+        for f in res.get("followed", [])[:10]:
             src = re.sub(r"^https?://(www\.)?", "", f.get("from") or "").split("/")[0]
-            L.append(f"- *{f.get('anchor') or '(no anchor)'}* — {f['url']}  \n"
+            L.append(f"- *{cell(f.get('anchor') or '(no anchor)', 90)}* — "
+                     f"{cell(f['url'], 160)}  \n"
                      f"  <sub>linked from {src}, {f.get('chars', 0)} chars</sub>")
         L.append("")
 
     if res.get("failures"):
         L.append("## Could not read (paywall, 403, JS-only)\n")
         for f in res["failures"][:10]:
-            L.append(f"- {f['url']} — {'; '.join(f['errors'][:2])[:120]}")
+            L.append(f"- {cell(f['url'], 120)} — {cell('; '.join(f['errors'][:2]), 120)}")
         L.append("")
 
     if res.get("errors"):
@@ -398,14 +424,14 @@ def main():
     ap.add_argument("question", nargs="+")
     ap.add_argument("-o", "--out", default=None, help="report.md path")
     ap.add_argument("--depth", type=int, default=2, choices=[1, 2, 3])
-    ap.add_argument("--max-sources", type=int, default=8)
+    ap.add_argument("--max-sources", type=_pos_int, default=8)
     ap.add_argument("--group", default="web", choices=["web", "tech", "academic", "all"])
     ap.add_argument("--provider", action="append", default=None)
-    ap.add_argument("--per-doc", type=int, default=5)
+    ap.add_argument("--per-doc", type=_nonneg_int, default=5)
     ap.add_argument("--no-fetch", action="store_true")
-    ap.add_argument("--follow", type=int, default=0, metavar="N",
+    ap.add_argument("--follow", type=_nonneg_int, default=0, metavar="N",
                     help="follow up to N outbound links per source page (hop 2)")
-    ap.add_argument("--follow-budget", type=int, default=6, metavar="M",
+    ap.add_argument("--follow-budget", type=_pos_int, default=6, metavar="M",
                     help="max total hop-2 pages (default 6)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
@@ -419,12 +445,23 @@ def main():
     res["_json_path"] = os.path.splitext(out)[0] + ".json"
 
     # -o reports/run.md should create reports/, not die with a traceback after
-    # the whole search and fetch has already been paid for
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    # the whole search and fetch has already been paid for. An unusable path is
+    # caught here, before the run, for the same reason.
+    if os.path.isdir(out):
+        raise SystemExit(f"-o {out}: is a directory, give it a file name")
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    except OSError as e:
+        raise SystemExit(f"-o {out}: {e.strerror or e}")
 
-    with open(os.path.splitext(out)[0] + ".json", "w", encoding="utf-8") as f:
-        json.dump({k: v for k, v in res.items() if k != "summaries"} | {
-            "summaries": res.get("summaries", {})}, f, indent=1, default=str)
+    try:
+        with open(os.path.splitext(out)[0] + ".json", "w", encoding="utf-8") as f:
+            json.dump({k: v for k, v in res.items() if k != "summaries"} | {
+                "summaries": res.get("summaries", {})}, f, indent=1, default=str)
+    except OSError as e:
+        # -o /dev/null, a read-only mount, a full disk: lose the trail, not the work
+        print(f"warning: could not write the trail next to {out}: {e}", file=sys.stderr)
+        res["_json_path"] = "(not written)"
 
     if a.no_fetch:
         print(json.dumps({"question": question, "queries": res["queries"],

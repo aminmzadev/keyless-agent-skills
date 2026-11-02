@@ -48,6 +48,39 @@ def _res(**over):
     return base
 
 
+class TableCellTests(unittest.TestCase):
+    """A page title with a newline or a pipe must not reshape the table.
+
+    Titles come from the page and from search engines; `|` added a column and a
+    newline split the row in two, losing the domain/chars/url of that source.
+    """
+
+    def test_cell_is_one_line_and_one_cell(self):
+        self.assertEqual(R.cell("a | b\nc\td"), "a / b c d")
+        self.assertEqual(R.cell(None), "")
+        self.assertEqual(R.cell("x" * 200, 10), "x" * 10)
+        self.assertEqual(R.cell("back\\slash"), "back/slash")
+
+    def test_the_sources_table_keeps_one_row_per_source(self):
+        res = _res(sources=[
+            {"url": "https://a.example/1", "title": "Real | Title\n| injected | row |",
+             "chars": 10, "source": "direct", "hop": 1},
+            {"url": "https://b.example/2", "search_title": "line1\nline2",
+             "chars": 5, "source": "direct", "hop": 1},
+        ])
+        md = R.to_markdown(res)
+        rows = [l for l in md.splitlines() if l.startswith("| [")]
+        self.assertEqual(len(rows), 2, rows)
+        for row in rows:
+            self.assertEqual(row.count("|"), 8, f"row changed shape: {row}")
+
+    def test_a_failure_url_is_also_single_line(self):
+        md = R.to_markdown(_res(failures=[{"url": "https://c.example/\nx",
+                                           "errors": ["a\nb", "c"]}]))
+        line = next(l for l in md.splitlines() if "c.example" in l)
+        self.assertNotIn("\n", line)
+
+
 class MethodTruthTests(unittest.TestCase):
     def test_the_method_names_the_providers_that_ran(self):
         md = R.to_markdown(_res())

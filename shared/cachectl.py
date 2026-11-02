@@ -86,6 +86,33 @@ def _entry_ts(path):
         return 0.0
 
 
+# ------------------------------------------------------------- argparse helpers
+# A CLI that accepts `--parallel 0` does not fail politely, it fails inside
+# ThreadPoolExecutor with a ValueError traceback — and `--max-chars -5` does
+# something worse: slicing with a negative index silently *drops the end of the
+# page* and reports success. Both are input validation, so it belongs here, in
+# the one module every CLI in the pack already ships.
+def pos_int(text):
+    n = int(text)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more (got {n})")
+    return n
+
+
+def nonneg_int(text):
+    n = int(text)
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or more (got {n})")
+    return n
+
+
+def pos_float(text):
+    x = float(text)
+    if not x > 0:
+        raise argparse.ArgumentTypeError(f"must be greater than 0 (got {text})")
+    return x
+
+
 # -------------------------------------------------------------- safe primitives
 # Every cache writer in the pack goes through these two functions. Writing
 # straight to the final path means a reader can open a file that is still being

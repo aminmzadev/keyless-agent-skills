@@ -1,7 +1,7 @@
 ---
 name: anon-image
 description: Free, anonymous AI image generation and editing with no API key and no account. Use when the user asks for an image, a picture, a mockup, a visual asset, a style transfer, an edit ("make it night", "remove the car", "repaint as oil"), or a before/after comparison. Also generates logo/hero/texture candidates and builds labelled contact sheets.
-version: 1.2.0
+version: 1.2.1
 license: skill-wrapper MIT; upstream services are third-party and rate-limited (see reference)
 ---
 

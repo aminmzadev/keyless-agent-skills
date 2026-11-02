@@ -48,8 +48,10 @@ for s in $SKILLS; do
   [ -f "$src/$s/SKILL.md" ] || { echo "missing skill: $s" >&2; exit 1; }
   mkdir -p "$out/skills/$s"
   # rsync is not guaranteed on a bare runner; tar+cp is
+  # tests stay in the repo, not in the package: their path constants point at
+  # the repo layout, so a shipped copy could not run where it lands
   ( cd "$src/$s" && tar -cf - --exclude='__pycache__' --exclude='*.pyc' \
-      --exclude='research_*.json' . ) | ( cd "$out/skills/$s" && tar -xf - )
+      --exclude='tests' --exclude='research_*.json' . ) | ( cd "$out/skills/$s" && tar -xf - )
   chmod +x "$out/skills/$s/scripts/"*.py 2>/dev/null || true
 done
 

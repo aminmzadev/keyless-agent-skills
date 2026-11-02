@@ -65,8 +65,30 @@ MAX_PDF = 48 * 1024 * 1024              # PDFs are legitimately large
 
 try:                                    # the shared cache layer, vendored next to us
     from _cachekit import atomic_write_json as _atomic_write_json
+    from _cachekit import nonneg_int, pos_float, pos_int
     from _cachekit import read_json as _read_json
 except ImportError:                     # a lone copy of fetch.py: same behaviour
+    def pos_int(text):                              # noqa: D103 - see _cachekit
+        import argparse
+        n = int(text)
+        if n < 1:
+            raise argparse.ArgumentTypeError(f"must be 1 or more (got {n})")
+        return n
+
+    def nonneg_int(text):                           # noqa: D103 - see _cachekit
+        import argparse
+        n = int(text)
+        if n < 0:
+            raise argparse.ArgumentTypeError(f"must be 0 or more (got {n})")
+        return n
+
+    def pos_float(text):                            # noqa: D103 - see _cachekit
+        import argparse
+        x = float(text)
+        if not x > 0:
+            raise argparse.ArgumentTypeError(f"must be greater than 0 (got {text})")
+        return x
+
     def _atomic_write_json(path, obj, **kw):        # noqa: D103 - see _cachekit
         tmp = f"{path}.tmp-{os.getpid()}-{threading.get_ident()}"
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -228,6 +250,9 @@ def html_to_markdown(html, keep_links=False, base=None):
 
 
 # ------------------------------------------------------------------ transports
+ALLOWED_SCHEMES = ("http", "https")
+
+
 class BodyTooLarge(RuntimeError):
     """The response was bigger than we are willing to hold in memory."""
 
@@ -258,8 +283,27 @@ def _gunzip_capped(raw, cap=None):
                 raise BodyTooLarge(f"gunzipped body over {cap // 1048576} MB, refused")
 
 
+def check_url(url):
+    """Refuse anything that is not http(s).
+
+    urllib will happily open `file:///etc/passwd` and `ftp://…`, and this tool
+    hands whatever it gets to a language model. A page that says "now fetch
+    file:///home/you/.ssh/id_rsa" must not be a working instruction, so the
+    scheme is checked once, here, before any stage runs.
+    """
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("empty URL")
+    scheme = urllib.parse.urlsplit(url.strip()).scheme.lower()
+    if scheme not in ALLOWED_SCHEMES:
+        raise ValueError(
+            f"refusing scheme {scheme + ':' if scheme else '(none)'} — "
+            f"only http and https are fetched")
+    return url.strip()
+
+
 def _open(url, timeout, headers=None, max_bytes=None):
     max_bytes = MAX_BODY if max_bytes is None else max_bytes
+    check_url(url)                       # backstop: every stage goes through here
     h = {"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,application/pdf,*/*",
          "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, identity"}
     if headers:
@@ -1392,6 +1436,7 @@ def _shape(res, max_chars):
 def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
           use_reader=True, use_archive=True, retries=1, deadline=45.0,
           use_vendor=True, use_rewrite=True):
+    url = check_url(url)
     hit = cache_get(url, ttl)
     # a cached entry only remembers links if it was collected with keep_links;
     # a caller that needs them (research --follow) must not inherit a linkless hit
@@ -1482,18 +1527,85 @@ def fetch(url, timeout=25, max_chars=20000, keep_links=False, ttl=86400,
 
 
 # ------------------------------------------------------------------------- cli
+_USERINFO = re.compile(r"^(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<user>[^/@\s]+)@")
+
+
+def redact(url):
+    """`https://user:pw@host/` must not carry the password into a file we write."""
+    m = _USERINFO.match(url or "")
+    if not m:
+        return url or ""
+    user = m.group("user").split(":", 1)[0]
+    return f"{m.group('scheme')}{user}:***@" + (url or "")[m.end():]
+
+
+def yaml_scalar(value):
+    """A JSON string is a valid YAML double-quoted scalar, newlines included.
+
+    Page titles are attacker-controlled and routinely contain a colon
+    ("Python: The Basics", "Error: Not Found"). Interpolated raw into the
+    frontmatter they make the block unparseable — `yaml.safe_load` raised
+    "mapping values are not allowed here" on a title from this very suite.
+    """
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def one_line(text, limit=200):
+    return re.sub(r"\s+", " ", str(text or "")).strip()[:limit]
+
+
+def link_text(text, limit=120):
+    """Anchor text for a markdown link: one line, balanced brackets."""
+    return one_line(text, limit).replace("\\", "/").replace("[", "(").replace("]", ")")
+
+
+def cell_url(url):
+    """A URL inside a markdown link: no whitespace, no closing paren, no newline."""
+    return re.sub(r"[\s()<>]", lambda m: urllib.parse.quote(m.group(0)), str(url or ""))[:400]
+
+
 def to_markdown(res):
-    fm = [f"url: {res['url']}"]
+    fm = [f"url: {yaml_scalar(redact(res['url']))}"]
     for k in ("title", "final_url", "source", "chars", "fetched_at", "snapshot_ts"):
         if res.get(k):
-            fm.append(f"{k}: {res[k]}")
+            value = redact(res[k]) if k == "final_url" else res[k]
+            fm.append(f"{k}: {yaml_scalar(value)}" if isinstance(value, str)
+                      else f"{k}: {value}")
     body = f"---\n" + "\n".join(fm) + "\n---\n\n"
     if res.get("title"):
-        body += f"# {res['title']}\n\n"
+        heading = re.sub(r"\s+", " ", res["title"]).strip()   # one line, always
+        body += f"# {heading}\n\n"
     body += res["text"]
     if res.get("links"):
-        body += "\n\n## Links\n" + "\n".join(f"- [{t}]({u})" for t, u in res["links"][:80])
+        # an anchor with a newline or a ] in it breaks the list item and the link
+        items = [f"- [{link_text(t)}]({cell_url(u)})" for t, u in res["links"][:80]]
+        body += "\n\n## Links\n" + "\n".join(items)
     return body
+
+
+def _require_dir(path, flag):
+    """A destination must be a directory we can write, decided before the work."""
+    if not path:
+        return
+    if os.path.exists(path) and not os.path.isdir(path):
+        raise SystemExit(f"{flag} {path}: exists and is not a directory")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        raise SystemExit(f"{flag} {path}: {e.strerror or e}")
+
+
+def _cli_fetch(url, a):
+    """CLI-level wrapper: a URL we refuse becomes a failed result, not a crash."""
+    ttl = 0 if a.no_cache else a.ttl
+    try:
+        return fetch(url, a.timeout, a.max_chars, a.links, ttl,
+                     not a.no_reader, not a.no_archive, 1, a.deadline,
+                     not a.no_vendor, not a.no_rewrite)
+    except ValueError as e:
+        return {"ok": False, "url": url, "title": "", "text": "", "chars": 0,
+                "full_chars": 0, "source": None, "errors": [str(e)], "links": [],
+                "media": [], "deadline_exceeded": False, "stages_cut": []}
 
 
 def main():
@@ -1503,10 +1615,10 @@ def main():
     ap.add_argument("--media", default=None, metavar="DIR",
                     help="download the post's pictures/videos into DIR "
                          "(only reddit and x posts carry media)")
-    ap.add_argument("--max-chars", type=int, default=20000)
-    ap.add_argument("--timeout", type=int, default=25)
+    ap.add_argument("--max-chars", type=pos_int, default=20000)
+    ap.add_argument("--timeout", type=pos_int, default=25)
     ap.add_argument("--links", action="store_true")
-    ap.add_argument("--ttl", type=int, default=86400, help="cache TTL seconds (0 disables)")
+    ap.add_argument("--ttl", type=nonneg_int, default=86400, help="cache TTL seconds (0 disables)")
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-reader", action="store_true")
     ap.add_argument("--no-archive", action="store_true")
@@ -1514,20 +1626,21 @@ def main():
                     help="skip the machine-readable twins (github raw, StackExchange API, ...)")
     ap.add_argument("--no-vendor", action="store_true",
                     help="skip the vendor extract stages, Firecrawl and Exa (also FETCH_VENDOR=0)")
-    ap.add_argument("--deadline", type=float, default=45.0,
+    ap.add_argument("--deadline", type=pos_float, default=45.0,
                     help="hard wall-clock cap per URL in seconds (default 45); "
                          "a stage that ignores its own timeout is abandoned")
-    ap.add_argument("--parallel", type=int, default=4)
+    ap.add_argument("--parallel", type=pos_int, default=4)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--text", action="store_true", help="print the extracted text")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args()
 
+    _require_dir(a.out, "--out")
+    _require_dir(a.media, "--media")
+
     ttl = 0 if a.no_cache else a.ttl
     with ThreadPoolExecutor(max_workers=a.parallel) as ex:
-        futs = {u: ex.submit(fetch, u, a.timeout, a.max_chars, a.links, ttl,
-                             not a.no_reader, not a.no_archive, 1, a.deadline,
-                             not a.no_vendor, not a.no_rewrite) for u in a.urls}
+        futs = {u: ex.submit(_cli_fetch, u, a) for u in a.urls}
         # collect in the order the URLs were given: a caller that runs
         # `fetch.py a b c --json` should not have to match results by URL
         results = [futs[u].result() for u in a.urls]
@@ -1553,8 +1666,10 @@ def main():
                 print(f"[media] {len(files)}/{len(r['media'])} saved to {a.media}")
 
     if a.json:
-        print(json.dumps([{k: v for k, v in r.items() if k != "text"} for r in results],
-                         indent=1))
+        # --json is machine output: the text goes *in* the payload, not after it,
+        # otherwise the array is followed by "===== url =====" and no parser can read it
+        print(json.dumps([{k: v for k, v in r.items() if k != "text" or a.text}
+                          for r in results], indent=1))
     elif not a.quiet:
         for r in results:
             if r.get("ok"):
@@ -1568,7 +1683,7 @@ def main():
                 print(f"[fail] {r['url'][:90]}")
                 for e in r["errors"][-3:]:
                     print(f"       {e}")
-    if a.text:
+    if a.text and not a.json:
         for r in results:
             if r.get("ok"):
                 print(f"\n===== {r['url']} =====\n{r['text']}")

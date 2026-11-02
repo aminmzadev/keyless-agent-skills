@@ -40,6 +40,15 @@ def log(m):
     print(m, file=sys.stderr)
 
 
+def at_least(text, minimum):
+    """argparse type: a half of these numbers makes ffmpeg emit a 0-frame file."""
+    n = float(text)
+    if n < minimum:
+        import argparse
+        raise argparse.ArgumentTypeError(f"must be {minimum} or more (got {text})")
+    return n
+
+
 def need(binary):
     if not shutil.which(binary):
         raise SystemExit(f"missing dependency: {binary}"
@@ -54,6 +63,13 @@ TIMEOUT = int(os.environ.get("VIDKIT_FFMPEG_TIMEOUT") or 900)
 def run(cmd, ok_codes=(0,), timeout=TIMEOUT):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        # the documented failure mode, in one place: `info` and `frames` call
+        # ffprobe/ffmpeg without a need() check, and a bare FileNotFoundError
+        # traceback is not "missing dependency: ffmpeg"
+        raise SystemExit(f"missing dependency: {cmd[0]}"
+                         + (" (apt install ffmpeg)"
+                            if str(cmd[0]) in ("ffmpeg", "ffprobe") else ""))
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"{cmd[0]} gave up after {timeout}s")
     if r.returncode not in ok_codes:
@@ -395,8 +411,8 @@ def main():
     v.add_argument("prompt", nargs="?", default=None)
     v.add_argument("-o", dest="out", default="out.mp4")
     v.add_argument("--images", default=None)
-    v.add_argument("--shots", type=int, default=3)
-    v.add_argument("--seconds", type=float, default=4)
+    v.add_argument("--shots", type=lambda t: int(at_least(t, 1)), default=3)
+    v.add_argument("--seconds", type=lambda t: at_least(t, 0.1), default=4)
     v.add_argument("--ratio", default="16:9", choices=list(RATIOS))
     v.add_argument("--narration", default=None, help="text, or a file path")
     v.add_argument("--audio", default=None, help="existing narration audio file")
@@ -409,7 +425,7 @@ def main():
     s = sub.add_parser("slideshow", help="existing images -> video")
     s.add_argument("images", nargs="+")
     s.add_argument("-o", dest="out", default="out.mp4")
-    s.add_argument("--seconds", type=float, default=3)
+    s.add_argument("--seconds", type=lambda t: at_least(t, 0.1), default=3)
     s.add_argument("--ratio", default="16:9", choices=list(RATIOS))
     s.add_argument("--narration", default=None)
     s.add_argument("--audio", default=None)
@@ -426,23 +442,23 @@ def main():
     f = sub.add_parser("frames", help="extract frames")
     f.add_argument("video")
     f.add_argument("--out", default="frames")
-    f.add_argument("--every", type=float, default=1.0)
+    f.add_argument("--every", type=lambda t: at_least(t, 0.01), default=1.0)
     f.set_defaults(func=cmd_frames)
 
     sh = sub.add_parser("sheet", help="contact sheet from a video")
     sh.add_argument("video")
     sh.add_argument("-o", dest="out", default="sheet.jpg")
-    sh.add_argument("--cols", type=int, default=4)
-    sh.add_argument("--count", type=int, default=8)
+    sh.add_argument("--cols", type=lambda t: int(at_least(t, 1)), default=4)
+    sh.add_argument("--count", type=lambda t: int(at_least(t, 1)), default=8)
     sh.set_defaults(func=cmd_sheet)
 
     g = sub.add_parser("gif", help="video -> gif")
     g.add_argument("video")
     g.add_argument("-o", dest="out", default="out.gif")
     g.add_argument("--start", type=float, default=0)
-    g.add_argument("--dur", type=float, default=3)
-    g.add_argument("--width", type=int, default=480)
-    g.add_argument("--fps", type=int, default=12)
+    g.add_argument("--dur", type=lambda t: at_least(t, 0.1), default=3)
+    g.add_argument("--width", type=lambda t: int(at_least(t, 16)), default=480)
+    g.add_argument("--fps", type=lambda t: int(at_least(t, 1)), default=12)
     g.set_defaults(func=cmd_gif)
 
     n = sub.add_parser("normalize", help="loudness-normalise audio to -16 LUFS")
@@ -453,7 +469,7 @@ def main():
     sp = sub.add_parser("speed", help="change audio speed without pitch shift")
     sp.add_argument("audio")
     sp.add_argument("-o", dest="out", default="sped.mp3")
-    sp.add_argument("--factor", type=float, default=1.2)
+    sp.add_argument("--factor", type=lambda t: at_least(t, 0.01), default=1.2)
     sp.set_defaults(func=cmd_speed)
 
     i = sub.add_parser("info", help="ffprobe summary")

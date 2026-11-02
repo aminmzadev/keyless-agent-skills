@@ -45,6 +45,7 @@ run "search yahoo + cookie jar" python3 "$here/web-search/tests/test_providers.p
 run "cache integrity + body caps" python3 "$here/web-search/tests/test_cache.py" -q
 run "ffmpeg wrappers (no encoder)"  python3 "$here/ffmpeg-pipeline/tests/test_vidkit.py" -q
 run "report tells the truth"      python3 "$here/deep-research/tests/test_report.py" -q
+run "fuzz the parsers (150 rounds)" python3 "$here/packaging/fuzz.py" 150
 if command -v npm >/dev/null; then
   run "publishable tree builds" bash -c "bash '$here/packaging/build.sh' --owner ci --name keyless-agent-skills >/dev/null && cd '$here/packaging/dist-repo' && npm pack --dry-run 2>&1 | grep -q 'total files'"
 else sk "publishable tree (npm not installed)"; fi

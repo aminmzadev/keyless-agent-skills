@@ -1261,6 +1261,147 @@ class MediaSniffTests(unittest.TestCase):
             self.assertEqual(os.listdir(d), [])
 
 
+class UrlSchemeTests(unittest.TestCase):
+    """A URL fetcher must not be a local-file reader.
+
+    `fetch.py file:///etc/passwd` used to return the file as clean markdown with
+    ok=True. That is a one-line instruction away from handing an agent an SSH key
+    that a web page told it to read.
+    """
+
+    def test_only_http_and_https_are_fetched(self):
+        for url in ("file:///etc/passwd", "ftp://example.com/x", "data:text/html,hi",
+                    "javascript:alert(1)", "//evil.example/x", "gopher://x/1"):
+            with self.assertRaises(ValueError, msg=url):
+                fetch_mod.check_url(url)
+
+    def test_valid_urls_pass_and_are_stripped(self):
+        self.assertEqual(fetch_mod.check_url("  https://example.com/a  "),
+                         "https://example.com/a")
+        self.assertEqual(fetch_mod.check_url("HTTP://example.com"), "HTTP://example.com")
+
+    def test_empty_input_is_refused(self):
+        for url in ("", "   ", None, 42):
+            with self.assertRaises(ValueError):
+                fetch_mod.check_url(url)
+
+    def test_fetch_refuses_before_touching_the_cache(self):
+        import tempfile
+        d = tempfile.mkdtemp(prefix="schemecache-")
+        old = fetch_mod.CACHE
+        fetch_mod.CACHE = d
+        try:
+            with self.assertRaises(ValueError):
+                fetch_mod.fetch("file:///etc/passwd", ttl=600)
+            self.assertEqual(os.listdir(d), [], "a refused URL must not write a cache entry")
+        finally:
+            fetch_mod.CACHE = old
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_the_cli_reports_a_refusal_instead_of_crashing(self):
+        out = subprocess.run([sys.executable, str(FETCH_PY), "file:///etc/passwd",
+                              "--deadline", "5", "--ttl", "0"],
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 2, out.stderr)
+        self.assertIn("only http and https", out.stdout + out.stderr)
+        self.assertNotIn("Traceback", out.stderr)
+        self.assertNotIn("root:", out.stdout, "must not leak /etc/passwd")
+
+
+class FrontmatterTests(unittest.TestCase):
+    """Page titles are attacker-controlled; they must not break the YAML block.
+
+    A title as ordinary as "Python: The Basics" made the frontmatter unparseable
+    ("mapping values are not allowed here"), which breaks any agent that reads
+    the metadata of a file this tool wrote.
+    """
+
+    def _frontmatter(self, res):
+        md = fetch_mod.to_markdown(res)
+        self.assertTrue(md.startswith("---\n"))
+        block = md.split("---\n")[1]
+        return block, md
+
+    def test_a_colon_in_the_title_stays_quoted(self):
+        block, md = self._frontmatter({"url": "https://e.example/a", "title": "Python: The Basics",
+                                       "text": "body", "chars": 4, "source": "direct"})
+        line = next(l for l in block.splitlines() if l.startswith("title:"))
+        self.assertEqual(json.loads(line[len("title: "):]), "Python: The Basics")
+
+    def test_a_newline_in_the_title_cannot_close_the_block(self):
+        block, md = self._frontmatter({"url": "https://e.example/a",
+                                       "title": "evil\n---\ngenerated: 1999",
+                                       "text": "body", "chars": 4, "source": "direct"})
+        self.assertNotIn("---", [l.strip() for l in block.splitlines()],
+                         "no line may look like a frontmatter close")
+        line = next(l for l in block.splitlines() if l.startswith("title:"))
+        self.assertEqual(json.loads(line[len("title: "):]), "evil\n---\ngenerated: 1999")
+        self.assertEqual(md.count("\n---\n"), 1, "the block must still close exactly once")
+
+    def test_credentials_in_a_url_are_not_written_out(self):
+        block, md = self._frontmatter({"url": "https://user:hunter2@e.example/a",
+                                       "text": "body", "chars": 4, "source": "direct"})
+        self.assertNotIn("hunter2", block)
+        self.assertIn("user:***@", block)
+
+    def test_a_link_with_a_newline_or_a_bracket_cannot_break_the_list(self):
+        md = fetch_mod.to_markdown({"url": "https://e.example/a", "text": "body", "chars": 4,
+                                    "source": "direct", "title": "t",
+                                    "links": [("has\nnewline] and [brackets", "https://e.example/a b(c)")]})
+        item = [l for l in md.splitlines() if l.startswith("- [")][0]
+        self.assertNotIn("\n", item)
+        self.assertEqual(item.count("]"), 1, f"a stray ] breaks the link: {item}")
+        self.assertEqual(item.index("]"), item.index("]("), "the only ] must close the text")
+        self.assertNotIn(" ", item.split("](")[1].rstrip(")"))
+
+    def test_redact_leaves_ordinary_urls_alone(self):
+        self.assertEqual(fetch_mod.redact("https://e.example/a?b=1"),
+                         "https://e.example/a?b=1")
+        self.assertEqual(fetch_mod.redact("https://u:p@e.example:8443/x"),
+                         "https://u:***@e.example:8443/x")
+
+
+class CliContractTests(unittest.TestCase):
+    """Flags that must be refused, and combinations that must stay parseable."""
+
+    def setUp(self):
+        self.site = _Site()
+        self.site.page_html = ("<html><head><title>t</title></head><body><p>"
+                               + "cli contract text " * 30 + "</p></body></html>")
+
+    def tearDown(self):
+        self.site.close()
+
+    def _cli(self, *args):
+        return subprocess.run([sys.executable, str(FETCH_PY), *args],
+                              capture_output=True, text=True)
+
+    def test_impossible_numbers_are_refused_not_silently_obeyed(self):
+        for flag, value in (("--parallel", "0"), ("--parallel", "-3"),
+                            ("--max-chars", "0"), ("--max-chars", "-5"),
+                            ("--timeout", "0"), ("--deadline", "0"), ("--ttl", "-1")):
+            out = self._cli(f"{self.site.base}/page", flag, value)
+            self.assertEqual(out.returncode, 2, f"{flag} {value} was accepted")
+            self.assertNotIn("Traceback", out.stderr)
+            self.assertIn("must be", out.stderr + out.stdout)
+
+    def test_json_with_text_is_still_json(self):
+        out = self._cli(f"{self.site.base}/page", "--json", "--text", "--ttl", "0",
+                        "--deadline", "10", "--no-reader", "--no-archive", "--no-vendor")
+        payload = json.loads(out.stdout)          # the whole point: it must parse
+        self.assertIn("text", payload[0])
+        self.assertNotIn("=====", out.stdout)
+
+    def test_out_pointing_at_a_file_is_refused_before_the_fetch(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile() as fh:
+            out = self._cli(f"{self.site.base}/page", "--out", fh.name)
+            self.assertNotEqual(out.returncode, 0)
+            self.assertNotIn("Traceback", out.stderr)
+            self.assertIn("not a directory", out.stderr)
+
+
 class UnitTests(unittest.TestCase):
     def test_stage_timeout_is_a_runtime_error(self):
         self.assertTrue(issubclass(fetch_mod.StageTimeout, RuntimeError))

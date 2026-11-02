@@ -1,7 +1,7 @@
 ---
 name: ffmpeg-pipeline
 description: Turn stills into video and do media surgery from the shell — Ken Burns motion, crossfades, narration muxing, contact sheets, frame extraction, GIFs, loudness normalisation and speed changes. Use when the user wants a video, a slideshow, a preview clip, a contact sheet of a video, or needs audio and video combined, trimmed or normalised.
-version: 1.2.1
+version: 1.2.2
 license: MIT
 ---
 

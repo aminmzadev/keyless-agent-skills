@@ -1,7 +1,7 @@
 ---
 name: fetch-page
 description: Turn any URL into clean markdown for an agent, with a five-stage fallback plus machine-readable rewrites (direct → two independent kinds of relay → two vendor readers that render JS and get past bot walls → Wayback Machine), and a PDF extractor that needs no dependency, a hard wall-clock deadline, PDF support and a 24-hour cache. Use whenever you have a URL and need its readable content — documentation, articles, changelogs, terms pages, papers, or a page a plain request cannot get through.
-version: 1.7.0
+version: 1.8.0
 license: MIT
 ---
 
@@ -156,6 +156,8 @@ run as soon as it refuses us.
 | `no proxy relayed: … 429/522/timeout` | every relay is rate-limiting at once | wait ~1 min, or `--no-archive --no-reader` if the page is static |
 | `reader:allorigins HTTP 500` | that relay choked on this URL | the next relay is already being tried |
 | `no Wayback snapshot` | page never archived | the URL is probably wrong; re-check it |
+| `refusing scheme file: — only http and https are fetched` | you passed `file://`, `ftp://`, `data:` … | deliberate: this tool must never be a way to read local files. Read them directly instead |
+| `must be 1 or more (got 0)` | an impossible flag value | none of these flags accept 0 or negatives; the message says which |
 | `PDF but no text extractor` | no pdftotext/pypdf | `apt install poppler-utils` or `pip install pypdf`; the reader proxy usually covers you anyway |
 | empty text, every stage failed | paywall or hard auth wall | report it, do not invent content |
 
@@ -198,6 +200,11 @@ after the first pass.
   got a stub, not an article.
 - `--max-chars` defaults to 20000, which is roughly a long article. Raise it for
   documentation pages, lower it when you only need the top of a page.
+- `--json` is machine output and stays parseable: with `--text` the text goes
+  *inside* the JSON, never after it.
+- `--out` writes quoted frontmatter (`title: "Python: The Basics"`), so a page
+  title with a colon, a newline or a `|` cannot break the YAML block or the link
+  list, and `user:pw@` in a URL is redacted before it reaches the file.
 - `chars` is what you got, `full_chars` is what the page holds. They differ when
   `--max-chars` cut the text; re-run with a bigger cap to read the rest. The cache
   stores the whole page, so asking for more is a cache hit, not a refetch.

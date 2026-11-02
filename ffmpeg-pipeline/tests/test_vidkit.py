@@ -105,6 +105,30 @@ class RunTests(unittest.TestCase):
         finally:
             V.subprocess.run = real
 
+    def test_a_missing_binary_is_the_documented_error_not_a_traceback(self):
+        """SKILL.md promises `missing dependency: ffmpeg`; info/frames never call need()."""
+        real = V.subprocess.run
+
+        def missing(cmd, **kw):
+            raise FileNotFoundError(2, "No such file or directory", cmd[0])
+
+        V.subprocess.run = missing
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                V.run(["ffprobe", "-v", "error", "x.mp4"])
+            msg = str(ctx.exception)
+            self.assertIn("missing dependency: ffprobe", msg)
+            self.assertIn("apt install ffmpeg", msg)
+        finally:
+            V.subprocess.run = real
+
+    def test_impossible_numbers_are_refused_by_argparse(self):
+        import argparse
+        for bad in ("0", "-1"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                V.at_least(bad, 1)
+        self.assertEqual(V.at_least("2.5", 1), 2.5)
+
     def test_the_timeout_is_configurable_from_the_environment(self):
         script = (
             "import importlib.util,os;"
